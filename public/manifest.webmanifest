@@ -1,0 +1,21 @@
+{
+  "id": "./",
+  "name": "Control de trabajos",
+  "short_name": "Trabajos",
+  "description": "Medidas, corte y colocación de felpudos para tu equipo.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#15473d",
+  "background_color": "#f6f4ed",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
