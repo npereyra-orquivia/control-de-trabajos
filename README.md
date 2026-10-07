@@ -15,7 +15,7 @@ El proyecto Supabase está configurado para entrar inmediatamente después del r
 3. La persona que corta abre el trabajo y actualiza su estado.
 4. Al colocar el felpudo, adjunta la foto del trabajo terminado y márcalo como colocado.
 
-Los estados son **Medido → En corte → Cortado → Colocado**. Se puede buscar por local y filtrar por estado.
+Los estados son **Medido → En corte → Cortado → Colocado**. Se puede buscar por nombre o número de local y combinar filtros por estado, material y espesor. **No sé / notas** incluye espesores desconocidos y valores distintos de 17/20 mm conservados en notas. **Sin especificar** distingue un material pendiente del valor explícito **No hay**. Los materiales adicionales ya registrados también aparecen como opciones. **Limpiar filtros** vuelve a mostrar todos los trabajos.
 
 La lista consulta los datos compartidos cada **120 segundos** y también se puede actualizar a mano. La sincronización mantiene las ediciones abiertas. Para editar un trabajo se pide un bloqueo a Supabase: solo una persona puede mantenerlo a la vez. El bloqueo dura **180 segundos**, se renueva cada **45 segundos** mientras se edita y se libera al terminar. Si la conexión se corta o se cierra el navegador, caduca por sí solo. Cada guardado comprueba además la versión del trabajo para impedir que una edición antigua sobrescriba cambios nuevos.
 

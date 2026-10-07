@@ -40,6 +40,7 @@ import {
   type Status,
 } from "./types";
 import { supabase } from "./lib/supabase";
+import { getMaterialOptions, matchesJob } from "./lib/filters.mjs";
 import {
   acquireDemo,
   createDemo,
@@ -152,6 +153,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [filter, setFilter] = useState<Status | "all">("all");
+  const [materialFilter, setMaterialFilter] = useState("all");
+  const [thicknessFilter, setThicknessFilter] = useState<"all" | "17" | "20" | "unknown">("all");
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState<"jobs" | "team" | "help">("jobs");
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -473,13 +476,23 @@ export default function App() {
       />
     );
 
-  const filtered = jobs.filter(
-    (job) =>
-      (filter === "all" || job.status === filter) &&
-      `${job.store_name} ${job.address} ${job.material}`
-        .toLocaleLowerCase("es")
-        .includes(search.toLocaleLowerCase("es")),
-  );
+  const filtered = jobs.filter((job) => matchesJob(job, {
+    status: filter,
+    material: materialFilter,
+    thickness: thicknessFilter,
+    search,
+  }));
+  const materialOptions = getMaterialOptions(jobs, MATERIALS);
+  if (materialFilter !== "all" && !materialOptions.some((item) => item.value === materialFilter)) {
+    materialOptions.push({ value: materialFilter, label: materialFilter.replace(/^other:/, "") });
+  }
+  const filtersActive = !!search.trim() || filter !== "all" || materialFilter !== "all" || thicknessFilter !== "all";
+  function clearFilters() {
+    setSearch("");
+    setFilter("all");
+    setMaterialFilter("all");
+    setThicknessFilter("all");
+  }
   const pending = jobs.filter((job) => job.status !== "installed").length;
   const person = (id: string) =>
     id
@@ -642,7 +655,7 @@ export default function App() {
                 <label className="search-box">
                   <Search size={18} />
                   <input
-                    placeholder="Buscar tienda, dirección o material…"
+                    placeholder="Buscar por nombre o número de local…"
                     aria-label="Buscar trabajos"
                     value={search}
                     onChange={(event) => setSearch(event.target.value)}
@@ -675,6 +688,48 @@ export default function App() {
                   <ChevronDown size={16} />
                 </label>
               </div>
+              <div className="detail-filters">
+                <label className="filter-field">
+                  <span>Material</span>
+                  <div className="filter-select">
+                    <select
+                      aria-label="Filtrar por material"
+                      value={materialFilter}
+                      onChange={(event) => setMaterialFilter(event.target.value)}
+                    >
+                      <option value="all">Todos</option>
+                      {materialOptions.map((item) => (
+                        <option key={item.value} value={item.value}>{item.label}</option>
+                      ))}
+                    </select>
+                    <ChevronDown size={16} />
+                  </div>
+                </label>
+                <label className="filter-field">
+                  <span>Espesor</span>
+                  <div className="filter-select">
+                    <select
+                      aria-label="Filtrar por espesor"
+                      value={thicknessFilter}
+                      onChange={(event) => setThicknessFilter(event.target.value as typeof thicknessFilter)}
+                    >
+                      <option value="all">Todos</option>
+                      <option value="20">20 mm</option>
+                      <option value="17">17 mm</option>
+                      <option value="unknown">No sé / notas</option>
+                    </select>
+                    <ChevronDown size={16} />
+                  </div>
+                </label>
+                {filtersActive && (
+                  <button className="clear-filters" onClick={clearFilters}>
+                    <X size={15} /> Limpiar filtros
+                  </button>
+                )}
+              </div>
+              {thicknessFilter === "unknown" && (
+                <p className="filter-help">Incluye espesores sin indicar y valores diferentes de 17/20 mm guardados en las notas.</p>
+              )}
               {initialLoading ? (
                 <div className="empty-state">
                   <LoaderCircle className="spin" />
@@ -684,22 +739,20 @@ export default function App() {
                 <div className="empty-state">
                   <Ruler size={34} />
                   <h3>
-                    {search || filter !== "all"
+                    {filtersActive
                       ? "No hay trabajos con este filtro"
                       : "La primera medición empieza aquí"}
                   </h3>
                   <p>
-                    {search || filter !== "all"
-                      ? "Prueba otra búsqueda o muestra todos los estados."
+                    {filtersActive
+                      ? "Prueba otra búsqueda o limpia los filtros."
                       : "Añade una tienda y sus medidas para que el equipo pueda empezar."}
                   </p>
                   <button
                     className="secondary"
                     onClick={() => {
-                      if (search || filter !== "all") {
-                        setSearch("");
-                        setFilter("all");
-                      } else
+                      if (filtersActive) clearFilters();
+                      else
                         setEditor({
                           job: null,
                           token: null,
@@ -708,7 +761,7 @@ export default function App() {
                         });
                     }}
                   >
-                    {search || filter !== "all"
+                    {filtersActive
                       ? "Ver todos"
                       : "Nueva medición"}
                   </button>

@@ -564,6 +564,44 @@ h1 > span {
   right: 13px;
   pointer-events: none;
 }
+.detail-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 13px;
+  margin: -7px 0 22px;
+}
+.filter-field {
+  flex: 1;
+  min-width: 0;
+  max-width: 260px;
+}
+.filter-field > span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #61745a;
+}
+.clear-filters {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 48px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: #526454;
+  font-size: 12px;
+  cursor: pointer;
+}
+.filter-help {
+  margin: -10px 0 20px;
+  color: #737c70;
+  font-size: 11px;
+  line-height: 1.6;
+}
 .job-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2138,6 +2176,30 @@ h1 > span {
   .filter-select select {
     height: 44px;
     font-size: 16px;
+  }
+  .detail-filters {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 0;
+    margin-bottom: 18px;
+  }
+  .filter-field {
+    max-width: none;
+  }
+  .filter-field select {
+    font-size: 16px;
+    padding-left: 10px;
+    padding-right: 29px;
+  }
+  .filter-field .filter-select > svg {
+    right: 9px;
+  }
+  .clear-filters {
+    grid-column: 1 / -1;
+    min-height: 44px;
+    justify-self: start;
+    padding-left: 0;
   }
   .job-grid {
     grid-template-columns: minmax(0, 1fr);
