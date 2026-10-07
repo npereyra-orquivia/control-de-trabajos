@@ -1,5 +1,5 @@
 -- Felpudos: ejecutar completo en Supabase > SQL Editor, en un proyecto dedicado.
--- No contiene contraseñas ni claves. Desactivar altas públicas en Authentication.
+-- No contiene contraseñas ni claves. Habilitar el registro en Authentication.
 begin;
 
 create schema if not exists private;

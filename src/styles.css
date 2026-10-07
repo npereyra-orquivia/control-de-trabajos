@@ -1326,6 +1326,37 @@ h1 > span {
   font-weight: 400;
   font-size: 12px;
 }
+.auth-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 18px;
+  color: #5f6d56;
+  font-size: 12px;
+}
+.auth-switch button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: 7px;
+  background: #edf2e6;
+  color: var(--green);
+  font-weight: 600;
+}
+.auth-switch button:hover:not(:disabled) {
+  background: #dfe9d6;
+}
+.auth-notice {
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #d3dfc7;
+  border-radius: 9px;
+  background: #edf2e6;
+  color: var(--green);
+  font-size: 12px;
+  line-height: 1.6;
+}
 .demo-link {
   display: flex;
   align-items: center;

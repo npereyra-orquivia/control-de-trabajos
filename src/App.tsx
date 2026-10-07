@@ -78,6 +78,10 @@ const dateTime = (value: string) =>
     minute: "2-digit",
   }).format(new Date(value));
 function errorMessage(error: unknown): string {
+  const code =
+    typeof error === "object" && error && "code" in error
+      ? String(error.code)
+      : "";
   const raw =
     error instanceof Error
       ? error.message
@@ -88,8 +92,34 @@ function errorMessage(error: unknown): string {
     return "El correo o la contraseña no son correctos.";
   if (/Failed to fetch|NetworkError|fetch failed/i.test(raw))
     return "No hay conexión. Comprueba la red y vuelve a intentarlo.";
-  if (/Email not confirmed/i.test(raw))
-    return "Tu cuenta necesita confirmar el correo. Contacta con quien administra la app.";
+  if (code === "email_not_confirmed" || /Email not confirmed/i.test(raw))
+    return "Revisa tu correo y confirma tu cuenta antes de entrar.";
+  if (
+    ["email_exists", "user_already_exists"].includes(code) ||
+    /User already registered|already exists/i.test(raw)
+  )
+    return "Este correo ya tiene una cuenta. Pulsa Iniciar sesión.";
+  if (
+    code === "email_address_not_authorized" ||
+    /Email address not authorized|email_address_not_authorized/i.test(raw)
+  )
+    return "El envío de correos de confirmación aún no está configurado para este correo. Contacta con quien administra la app.";
+  if (/Database error saving new user/i.test(raw))
+    return "No se ha podido crear la cuenta. El equipo admite hasta cinco usuarios; consulta con quien administra la app.";
+  if (
+    code === "signup_disabled" ||
+    /Signups not allowed|signup.*disabled/i.test(raw)
+  )
+    return "El registro todavía no está habilitado. Vuelve a intentarlo en unos minutos.";
+  if (
+    ["over_request_rate_limit", "over_email_send_rate_limit"].includes(code) ||
+    /rate limit|too many requests/i.test(raw)
+  )
+    return "Se han realizado demasiados intentos. Espera unos minutos y vuelve a intentarlo.";
+  if (/Password should|weak password/i.test(raw))
+    return "Elige una contraseña de al menos ocho caracteres.";
+  if (/Error sending confirmation email/i.test(raw))
+    return "No se ha podido enviar el correo de confirmación. Contacta con quien administra la app para revisar el envío de correos.";
   return raw;
 }
 function Brand() {
@@ -328,14 +358,12 @@ export default function App() {
         const draftId = editor.draftId!;
         if (demo) createDemo(validated, draftId);
         else {
-          const result = await supabase!
-            .from("jobs")
-            .insert({
-              ...validated,
-              id: draftId,
-              created_by: identity,
-              updated_by: identity,
-            });
+          const result = await supabase!.from("jobs").insert({
+            ...validated,
+            id: draftId,
+            created_by: identity,
+            updated_by: identity,
+          });
           if (result.error) {
             if (result.error.code !== "23505") throw result.error;
             // A retry after a lost response must not create the measurement twice.
@@ -873,21 +901,57 @@ export default function App() {
 }
 
 function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [notice, setNotice] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  function changeMode(nextMode: "login" | "register") {
+    setMode(nextMode);
+    setMessage("");
+    setNotice("");
+    setShowPassword(false);
+  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!supabase || busy) return;
     const form = new FormData(event.currentTarget);
     setBusy(true);
     setMessage("");
+    setNotice("");
     try {
-      const result = await supabase.auth.signInWithPassword({
-        email: String(form.get("email")).trim(),
-        password: String(form.get("password")),
-      });
-      if (result.error) throw result.error;
+      const email = String(form.get("email")).trim();
+      const password = String(form.get("password"));
+      if (mode === "register") {
+        const name = String(form.get("display_name")).trim();
+        if (!name)
+          throw new Error(
+            "Escribe tu nombre para que el equipo te identifique.",
+          );
+        if (password.length < 8)
+          throw new Error("La contraseña debe tener al menos ocho caracteres.");
+        if (password !== String(form.get("password_confirmation")))
+          throw new Error("Las contraseñas no coinciden.");
+        const result = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { display_name: name },
+            emailRedirectTo: new URL(".", window.location.href).href,
+          },
+        });
+        if (result.error) throw result.error;
+        if (!result.data.session)
+          setNotice(
+            "Si este correo no tenía una cuenta, recibirás un enlace para confirmarla. Revisa también la carpeta de spam. Si ya tienes cuenta, inicia sesión.",
+          );
+      } else {
+        const result = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (result.error) throw result.error;
+      }
     } catch (loginError) {
       setMessage(errorMessage(loginError));
     } finally {
@@ -944,10 +1008,27 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
           <span className="login-lock">
             <LockKeyhole size={23} />
           </span>
-          <h2>Hola, equipo.</h2>
-          <p>Entra para continuar con tus trabajos.</p>
+          <h2>{mode === "register" ? "Crea tu cuenta." : "Hola, equipo."}</h2>
+          <p>
+            {mode === "register"
+              ? "Únete al equipo y empieza a trabajar."
+              : "Entra para continuar con tus trabajos."}
+          </p>
           {supabase ? (
-            <form onSubmit={submit}>
+            <form onSubmit={submit} key={mode}>
+              {mode === "register" && (
+                <label>
+                  Tu nombre
+                  <input
+                    name="display_name"
+                    autoComplete="name"
+                    placeholder="Cómo te llama el equipo"
+                    maxLength={100}
+                    disabled={busy}
+                    required
+                  />
+                </label>
+              )}
               <label>
                 Correo electrónico
                 <input
@@ -955,6 +1036,7 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
                   name="email"
                   autoComplete="username"
                   placeholder="tu@correo.com"
+                  disabled={busy}
                   required
                 />
               </label>
@@ -964,8 +1046,16 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
                   <input
                     type={showPassword ? "text" : "password"}
                     name="password"
-                    autoComplete="current-password"
-                    placeholder="Tu contraseña"
+                    autoComplete={
+                      mode === "register" ? "new-password" : "current-password"
+                    }
+                    placeholder={
+                      mode === "register"
+                        ? "Al menos 8 caracteres"
+                        : "Tu contraseña"
+                    }
+                    minLength={mode === "register" ? 8 : undefined}
+                    disabled={busy}
                     required
                   />
                   <button
@@ -979,9 +1069,28 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
                   </button>
                 </div>
               </label>
+              {mode === "register" && (
+                <label>
+                  Repite la contraseña
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    name="password_confirmation"
+                    autoComplete="new-password"
+                    placeholder="La misma contraseña"
+                    minLength={8}
+                    disabled={busy}
+                    required
+                  />
+                </label>
+              )}
               {(message || error) && (
                 <div className="form-error" role="alert">
                   {message || error}
+                </div>
+              )}
+              {notice && (
+                <div className="auth-notice" role="status">
+                  {notice}
                 </div>
               )}
               <button className="primary" disabled={busy}>
@@ -989,14 +1098,31 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
                   <LoaderCircle className="spin" size={18} />
                 ) : (
                   <>
-                    Entrar <ArrowRight size={18} />
+                    {mode === "register" ? "Crear cuenta" : "Entrar"}{" "}
+                    <ArrowRight size={18} />
                   </>
                 )}
               </button>
+              <div className="auth-switch">
+                <span>
+                  {mode === "register"
+                    ? "¿Ya tienes cuenta?"
+                    : "¿Es tu primera vez?"}
+                </span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    changeMode(mode === "register" ? "login" : "register")
+                  }
+                >
+                  {mode === "register" ? "Iniciar sesión" : "Registrarme"}
+                </button>
+              </div>
               <small>
-                ¿Necesitas acceso o recuperar tu contraseña?
-                <br />
-                Contacta con quien administra tu equipo.
+                {mode === "register"
+                  ? "El equipo admite hasta cinco cuentas."
+                  : "Para recuperar tu contraseña, contacta con quien administra tu equipo."}
               </small>
             </form>
           ) : (
@@ -1015,7 +1141,7 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
             Ver la aplicación de ejemplo <ArrowRight size={16} />
           </button>
           <div className="login-footnote">
-            <ShieldCheck size={15} /> Acceso privado · Hasta 5 usuarios
+            <ShieldCheck size={15} /> Equipo de hasta 5 usuarios
           </div>
         </div>
       </main>

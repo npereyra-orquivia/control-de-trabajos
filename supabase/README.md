@@ -6,15 +6,25 @@ La aplicación usa un proyecto de Supabase dedicado, hasta cinco trabajadores ac
 
 1. Abre el proyecto de Supabase y entra en **SQL Editor**.
 2. Copia y ejecuta todo el contenido de [`schema.sql`](schema.sql). Crea tablas, reglas de acceso, el bucket privado `job-photos` y la suscripción Realtime. Se puede ejecutar otra vez sin borrar los trabajos. Si ya existen más de cinco cuentas sin perfil, el proceso se cancela: utiliza un proyecto dedicado.
-3. En **Authentication → Sign In / Providers**, desactiva **Allow new users to sign up** y **Allow anonymous sign-ins**. Mantén habilitado el proveedor de correo y contraseña. No habilites proveedores sociales para este equipo.
+3. En **Authentication → Sign In / Providers**, habilita **Allow new users to sign up** y el proveedor de correo y contraseña. Mantén desactivado **Allow anonymous sign-ins**. El formulario permite que los trabajadores creen sus propias cuentas.
 4. En **Authentication → URL Configuration**, configura la URL definitiva de GitHub Pages como **Site URL** y añádela también a **Redirect URLs**, incluyendo la carpeta del repositorio y la barra final, por ejemplo `https://TU_USUARIO.github.io/TU_REPOSITORIO/`. Para desarrollo puedes añadir la URL local exacta que use la aplicación.
 5. Configura el frontend con la URL del proyecto y su clave **publishable** o **anon**. La aplicación no necesita ni debe publicar claves **secret**, **service_role** o la contraseña de la base de datos. Las reglas RLS son las que protegen los datos cuando se usa la clave pública.
 
-## Dar de alta los cinco usuarios
+## Registro de los cinco usuarios
 
-En **Authentication → Users → Add user → Create new user**, añade cada correo y contraseña; marca el correo como confirmado si la interfaz ofrece esa opción. No hace falta habilitar las altas públicas para crear usuarios desde el panel. El primer usuario recibe `role = 'admin'`; los siguientes, `role = 'member'`. El trigger crea los perfiles y rechaza una sexta cuenta activa, también si dos altas llegan a la vez. El rol y el estado activo no se toman de metadatos editables por el usuario.
+Cada persona pulsa **Registrarme** en la aplicación, introduce su nombre y correo, elige una contraseña de al menos ocho caracteres, la repite y pulsa **Crear cuenta**. El formulario envía el nombre como `display_name`; el trigger crea su perfil. El primer usuario recibe `role = 'admin'`; los siguientes, `role = 'member'`. El rol y el estado activo los fija el servidor, sin tomarlos de metadatos editables por el usuario.
 
-Los usuarios entran con correo y contraseña. Para personalizar los nombres, usa **Table Editor → profiles** o ejecuta, sustituyendo el correo de ejemplo:
+La base de datos rechaza una sexta cuenta activa, también si dos altas llegan a la vez. **Las cuentas pendientes de confirmar el correo también ocupan plaza**, porque el perfil se crea durante el registro. Los miembros activos del único equipo comparten todos los trabajos. Para revisar las cuentas y sus confirmaciones, usa **Authentication → Users**.
+
+### Confirmación del correo
+
+Con **Confirm email** habilitado, la persona debe abrir el enlace de confirmación recibido antes de iniciar sesión. El formulario muestra un aviso para revisar el correo y la carpeta de spam; el enlace vuelve a la aplicación mediante `emailRedirectTo`. Si el correo ya tiene cuenta, debe utilizar **Entrar**.
+
+Para enviar confirmaciones a correos de los trabajadores, configura un servidor SMTP propio en **Authentication → Emails → SMTP Settings**. El servicio predeterminado de Supabase solo envía a correos que pertenecen al equipo de la organización de Supabase y tiene un límite de dos mensajes por hora; no basta para dar de alta a cinco trabajadores con otros correos. Véase la [documentación de SMTP](https://supabase.com/docs/guides/auth/auth-smtp).
+
+Si el propietario elige un registro con entrada directa, puede desactivar **Confirm email** en la configuración del proveedor de correo. En ese caso, Supabase devuelve una sesión al crear la cuenta y la aplicación permite entrar inmediatamente, sin verificar la propiedad del correo. El límite de cinco plazas y los permisos de los trabajos siguen aplicándose. La aplicación admite tanto confirmación por correo como entrada directa, según la configuración del proyecto.
+
+Los usuarios entran después con correo y contraseña. El nombre se guarda durante el registro; para corregirlo desde administración, usa **Table Editor → profiles** o ejecuta, sustituyendo el correo de ejemplo:
 
 ```sql
 update public.profiles
