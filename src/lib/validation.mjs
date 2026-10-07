@@ -10,6 +10,9 @@ export function parseMeasure(value) {
   return number;
 }
 export function validateInput(input) {
+  const thickness = input.thickness_mm === undefined ? null : input.thickness_mm;
+  if (thickness !== null && thickness !== 17 && thickness !== 20)
+    throw new Error("El grosor debe ser 17 mm, 20 mm o «No sé».");
   if (!input.store_name.trim())
     throw new Error("Escribe el nombre de la tienda.");
   if (input.store_name.trim().length > 140)
@@ -39,6 +42,7 @@ export function validateInput(input) {
     throw new Error("Revisa las medidas del felpudo.");
   return {
     ...input,
+    thickness_mm: thickness,
     store_name: input.store_name.trim(),
     address: input.address.trim(),
     material: input.material.trim(),

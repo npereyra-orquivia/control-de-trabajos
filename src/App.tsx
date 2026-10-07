@@ -30,6 +30,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  MATERIALS,
   STATUSES,
   type Job,
   type JobInput,
@@ -1205,7 +1206,13 @@ function JobCard({
         <span className="mini-mat" aria-hidden="true" />
       </div>
       <div className="material-line">
-        <span>{job.material || "Material sin especificar"}</span>
+        <span>
+          {MATERIALS.find((item) => item.value === job.material)?.label ||
+            job.material || "Material sin especificar"}
+          <small>
+            Espesor: {job.thickness_mm == null ? "No sé" : `${job.thickness_mm} mm`}
+          </small>
+        </span>
         <span>
           {job.quantity} {job.quantity === 1 ? "unidad" : "unidades"}
         </span>
@@ -1280,8 +1287,9 @@ function JobEditor({
     address: job?.address || "",
     width: String(job?.width_cm || ""),
     length: String(job?.length_cm || ""),
+    thickness: String(job?.thickness_mm ?? ""),
     quantity: job?.quantity || 1,
-    material: job?.material || "Coco natural · 20 mm",
+    material: job ? job.material : "coco",
     notes: job?.notes || "",
   });
   const [busy, setBusy] = useState(false);
@@ -1391,6 +1399,7 @@ function JobEditor({
           address: values.address,
           width_cm: parseMeasure(values.width),
           length_cm: parseMeasure(values.length),
+          thickness_mm: values.thickness === "" ? null : Number(values.thickness),
           quantity: Number(values.quantity),
           material: values.material,
           notes: values.notes,
@@ -1548,16 +1557,39 @@ function JobEditor({
           <div className="material-form">
             <label>
               Material
-              <input
+              <select
                 value={values.material}
                 onChange={(event) =>
                   setValues({ ...values, material: event.target.value })
                 }
-                maxLength={100}
-                placeholder="Material y grosor"
                 disabled={!measurementsEditable}
-              />
+              >
+                {!MATERIALS.some((item) => item.value === values.material) && (
+                  <option value={values.material}>
+                    {values.material || "Sin especificar"}
+                  </option>
+                )}
+                {MATERIALS.map((item) => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
+                ))}
+              </select>
             </label>
+            <label>
+              Espesor
+              <select
+                value={values.thickness}
+                onChange={(event) =>
+                  setValues({ ...values, thickness: event.target.value })
+                }
+                disabled={!measurementsEditable}
+              >
+                <option value="">No sé</option>
+                <option value="20">20 mm</option>
+                <option value="17">17 mm</option>
+              </select>
+            </label>
+          </div>
+          <div className="quantity-form">
             <label>
               Unidades
               <input

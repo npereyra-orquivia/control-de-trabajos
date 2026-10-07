@@ -30,7 +30,8 @@ function sampleJobs(): Job[] {
       address: "Calle Mayor, 24 · Barcelona",
       width_cm: 120,
       length_cm: 180,
-      material: "Coco natural · 20 mm",
+      material: "coco",
+      thickness_mm: 20,
       notes: "Entrada principal. Comprobar el sentido de la fibra.",
       status: "measured" as const,
       created_by: "demo-ana",
@@ -40,7 +41,8 @@ function sampleJobs(): Job[] {
       address: "Rambla, 108 · Barcelona",
       width_cm: 95,
       length_cm: 150,
-      material: "Coco natural · 20 mm",
+      material: "coco",
+      thickness_mm: 17,
       notes: "Dejar preparado para la ruta de mañana.",
       status: "cutting" as const,
       created_by: "demo-luis",
@@ -50,7 +52,8 @@ function sampleJobs(): Job[] {
       address: "Avenida del Norte, 12 · Barcelona",
       width_cm: 200,
       length_cm: 140,
-      material: "Sintético gris · 12 mm",
+      material: "metálico",
+      thickness_mm: null,
       notes: "Acceso por la puerta lateral.",
       status: "cut" as const,
       created_by: "demo-marta",
@@ -76,7 +79,14 @@ function sampleJobs(): Job[] {
 export function demoJobs(): Job[] {
   try {
     const value = localStorage.getItem(key);
-    if (value) return JSON.parse(value);
+    if (value) {
+      const storedJobs: Job[] = JSON.parse(value);
+      if (Array.isArray(storedJobs))
+        return storedJobs.map((job) => ({
+          ...job,
+          thickness_mm: job.thickness_mm ?? null,
+        }));
+    }
   } catch {
     /* A fresh example remains usable if storage is unavailable. */
   }

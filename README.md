@@ -6,12 +6,12 @@ Aplicación web para móvil para coordinar la medida, el corte y la colocación 
 - **Código:** [Repositorio en GitHub](https://github.com/npereyra-orquivia/control-de-trabajos).
 - **Proyecto Supabase:** [Orquivia — panel de administración](https://supabase.com/dashboard/project/umpbktnavrxicttqwffs). URL del servicio: `https://umpbktnavrxicttqwffs.supabase.co`.
 
-El proyecto Supabase ya está configurado con el esquema y las fotos privadas. Cada persona puede darse de alta desde **Registrarme**, con nombre, correo y contraseña de al menos ocho caracteres. Hay **cinco plazas de usuarios activos**; las cuentas pendientes de confirmar el correo también ocupan plaza. La primera cuenta recibe el rol de administrador y las siguientes el de miembro.
+El proyecto Supabase está configurado para entrar inmediatamente después del registro, sin correo de confirmación. Cada persona puede darse de alta desde **Registrarme**, con nombre, correo y contraseña de al menos ocho caracteres. Hay **cinco plazas de usuarios activos**. La primera cuenta recibe el rol de administrador y las siguientes el de miembro.
 
 ## Uso diario
 
-1. Si aún no tienes cuenta, pulsa **Registrarme**, completa tus datos, repite la contraseña y pulsa **Crear cuenta**. Si se solicita confirmar el correo, abre el enlace recibido antes de entrar. Después, inicia sesión con tu correo y contraseña.
-2. Crea un trabajo para el local y guarda ancho y largo en centímetros.
+1. Si aún no tienes cuenta, pulsa **Registrarme**, completa tus datos, repite la contraseña y pulsa **Crear cuenta**. Entras directamente en la aplicación. En las siguientes visitas, inicia sesión con tu correo y contraseña.
+2. Crea un trabajo para el local y guarda **ancho y largo en centímetros**. Elige el **espesor en milímetros: 20 mm, 17 mm o No sé**, y el material: **Coco, Metálico o No hay**. «No sé» se guarda como espesor desconocido (`null`), nunca como cero.
 3. La persona que corta abre el trabajo y actualiza su estado.
 4. Al colocar el felpudo, adjunta la foto del trabajo terminado y márcalo como colocado.
 
@@ -26,8 +26,8 @@ El proyecto **Control de trabajos**, de la organización **Orquivia**, ya tiene 
 1. Crea o elige el proyecto Supabase que se usará para esta aplicación.
 2. Abre **SQL Editor**, copia todo el archivo [`supabase/schema.sql`](supabase/schema.sql) y ejecútalo. El archivo crea las tablas, las funciones de edición, los permisos y el bucket privado de fotos.
 3. En **Authentication → Sign In / Providers**, habilita **Allow new users to sign up** y el proveedor de correo y contraseña. Mantén desactivado **Allow anonymous sign-ins**.
-4. Elige el flujo de correo: con **Confirm email** habilitado, configura un servidor SMTP propio para enviar confirmaciones a los trabajadores. El envío predeterminado de Supabase solo admite correos de miembros de la organización de Supabase. Si el propietario desactiva **Confirm email**, el alta permite entrar directamente, sin verificar la propiedad del correo. La aplicación admite ambos flujos. Consulta los detalles en [`supabase/README.md`](supabase/README.md).
-5. En **Authentication → URL Configuration**, configura la URL de GitHub Pages como **Site URL** y añádela a **Redirect URLs**, con la carpeta del repositorio y la barra final. El formulario usa esa página como destino de la confirmación.
+4. En la configuración del proveedor de correo, mantén **Confirm email desactivado**. Es el flujo elegido para este proyecto: **Crear cuenta** devuelve una sesión y permite entrar directamente. No requiere SMTP ni enviar un correo de confirmación. La alternativa con confirmación y SMTP está documentada en [`supabase/README.md`](supabase/README.md).
+5. En **Authentication → URL Configuration**, configura la URL de GitHub Pages como **Site URL** y añádela a **Redirect URLs**, con la carpeta del repositorio y la barra final. Estas URLs se utilizan si después se habilitan confirmaciones, invitaciones o recuperación por correo.
 6. Obtén la **Project URL** y la clave **publishable** o la clave antigua **anon** desde la configuración API del proyecto.
 
 La URL y la clave publicable/anon se incluyen en la aplicación del navegador. La protección de los datos depende de las políticas de Supabase y de la sesión de cada usuario. **No copies una clave `service_role` ni una clave secreta** al proyecto, a `.env` o a GitHub Actions. El esquema aplica políticas de acceso y un límite de cinco cuentas de trabajo.
@@ -72,11 +72,11 @@ El archivo `.env` se excluye de Git. Reinicia el servidor después de cambiar la
    - `VITE_SUPABASE_ANON_KEY`: clave publicable o anon.
 3. En **Settings → Pages → Build and deployment → Source**, selecciona **GitHub Actions**.
 4. Sube los cambios a `main` o ejecuta manualmente el flujo **Publicar en GitHub Pages** desde **Actions**.
-5. Abre la URL que devuelve la tarea de publicación. Configura esa URL como **Site URL** y como URL de redirección permitida en Supabase para que la confirmación del registro vuelva a la aplicación.
+5. Abre la URL que devuelve la tarea de publicación. Configura esa URL como **Site URL** y como URL de redirección permitida en Supabase para los enlaces de autenticación por correo que puedan utilizarse después.
 
 El flujo comprueba la configuración, ejecuta las pruebas, compila la aplicación y publica `dist`. Si falta una variable, comprueba el código y muestra un aviso, pero no publica. Vite utiliza rutas relativas (`base: './'`), por lo que funciona también en una dirección como `https://usuario.github.io/control-de-trabajos/`.
 
-Las pruebas de base de datos ejecutan 56 comprobaciones en PGlite con Auth y Storage simulados. Cubren permisos, cinco usuarios, bloqueos, caducidad, versiones, fases y fotos. La conexión HTTP, las cargas reales de Storage y la concurrencia entre dispositivos deben verificarse también con el proyecto de Supabase conectado.
+Las pruebas de base de datos ejecutan el esquema en PGlite con Auth y Storage simulados. Cubren permisos, cinco usuarios, medidas y espesor, bloqueos, caducidad, versiones, fases y fotos. La conexión HTTP, las cargas reales de Storage y la concurrencia entre dispositivos deben verificarse también con el proyecto de Supabase conectado.
 
 ## Añadir al inicio del móvil
 

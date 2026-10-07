@@ -11,6 +11,7 @@ export interface Job {
   address: string;
   width_cm: number;
   length_cm: number;
+  thickness_mm: number | null;
   quantity: number;
   material: string;
   notes: string;
@@ -41,11 +42,17 @@ export type JobInput = Pick<
   | "address"
   | "width_cm"
   | "length_cm"
+  | "thickness_mm"
   | "quantity"
   | "material"
   | "notes"
 >;
 export type JobPatch = Partial<JobInput & Pick<Job, "status" | "photo_path">>;
+export const MATERIALS = [
+  { value: "coco", label: "Coco" },
+  { value: "metálico", label: "Metálico" },
+  { value: "no hay", label: "No hay" },
+] as const;
 export const STATUSES: {
   id: Status;
   label: string;

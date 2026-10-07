@@ -143,6 +143,8 @@ create table if not exists public.jobs (
   width_cm numeric(8, 2) not null check (width_cm > 0 and width_cm <= 100000),
   length_cm numeric(8, 2) not null check (length_cm > 0 and length_cm <= 100000),
   quantity integer not null default 1 check (quantity between 1 and 100),
+  thickness_mm smallint constraint jobs_thickness_mm_check
+    check (thickness_mm is null or thickness_mm in (17, 20)),
   material text not null default '' check (char_length(material) <= 100),
   notes text not null default '' check (char_length(notes) <= 3000),
   status text not null default 'measured'
@@ -178,6 +180,18 @@ alter table public.jobs add column if not exists measured_by uuid references aut
 alter table public.jobs add column if not exists cutting_by uuid references auth.users(id) on delete set null;
 alter table public.jobs add column if not exists cut_by uuid references auth.users(id) on delete set null;
 alter table public.jobs add column if not exists installed_by uuid references auth.users(id) on delete set null;
+alter table public.jobs add column if not exists thickness_mm smallint;
+do $$
+begin
+  if not exists (
+    select 1 from pg_catalog.pg_constraint
+    where conrelid = 'public.jobs'::regclass and conname = 'jobs_thickness_mm_check'
+  ) then
+    alter table public.jobs add constraint jobs_thickness_mm_check
+      check (thickness_mm is null or thickness_mm in (17, 20));
+  end if;
+end;
+$$;
 
 create index if not exists jobs_status_updated_idx on public.jobs(status, updated_at desc);
 create index if not exists jobs_created_by_idx on public.jobs(created_by);
@@ -242,12 +256,13 @@ begin
     measurement_changed := (new.width_cm is distinct from old.width_cm
         or new.length_cm is distinct from old.length_cm
         or new.quantity is distinct from old.quantity
+        or new.thickness_mm is distinct from old.thickness_mm
         or new.material is distinct from old.material);
     if measurement_changed and not (
       new.status = 'measured' or
       (old.status = 'measured' and new.status = 'cutting')
     ) then
-      raise exception 'Vuelve a medir el trabajo antes de cambiar medidas, material o cantidad.'
+      raise exception 'Vuelve a medir el trabajo antes de cambiar medidas, espesor, material o cantidad.'
         using errcode = '23514';
     end if;
     if measurement_changed then
@@ -418,7 +433,7 @@ begin
   if exists (
     select 1 from pg_catalog.jsonb_object_keys(p_patch) as patch_key(key)
     where key not in (
-      'store_name', 'address', 'width_cm', 'length_cm', 'quantity',
+      'store_name', 'address', 'width_cm', 'length_cm', 'quantity', 'thickness_mm',
       'material', 'notes', 'status', 'photo_path'
     )
   ) then
@@ -451,6 +466,7 @@ begin
     width_cm = case when p_patch ? 'width_cm' then (p_patch ->> 'width_cm')::numeric else current_job.width_cm end,
     length_cm = case when p_patch ? 'length_cm' then (p_patch ->> 'length_cm')::numeric else current_job.length_cm end,
     quantity = case when p_patch ? 'quantity' then (p_patch ->> 'quantity')::integer else current_job.quantity end,
+    thickness_mm = case when p_patch ? 'thickness_mm' then (p_patch ->> 'thickness_mm')::smallint else current_job.thickness_mm end,
     material = case when p_patch ? 'material' then p_patch ->> 'material' else current_job.material end,
     notes = case when p_patch ? 'notes' then p_patch ->> 'notes' else current_job.notes end,
     status = case when p_patch ? 'status' then p_patch ->> 'status' else current_job.status end,
