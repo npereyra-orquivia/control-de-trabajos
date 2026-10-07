@@ -31,6 +31,7 @@ function sampleJobs(): Job[] {
       width_cm: 120,
       length_cm: 180,
       material: "coco",
+      responsible_name: "Ana García",
       thickness_mm: 20,
       notes: "Entrada principal. Comprobar el sentido de la fibra.",
       status: "measured" as const,
@@ -42,6 +43,7 @@ function sampleJobs(): Job[] {
       width_cm: 95,
       length_cm: 150,
       material: "coco",
+      responsible_name: "Luis Martín",
       thickness_mm: 17,
       notes: "Dejar preparado para la ruta de mañana.",
       status: "cutting" as const,
@@ -53,6 +55,7 @@ function sampleJobs(): Job[] {
       width_cm: 200,
       length_cm: 140,
       material: "metálico",
+      responsible_name: "Marta López",
       thickness_mm: null,
       notes: "Acceso por la puerta lateral.",
       status: "cut" as const,
@@ -85,6 +88,7 @@ export function demoJobs(): Job[] {
         return storedJobs.map((job) => ({
           ...job,
           thickness_mm: job.thickness_mm ?? null,
+          responsible_name: job.responsible_name ?? "",
         }));
     }
   } catch {
@@ -140,6 +144,7 @@ export function createDemo(input: JobInput, id: string = crypto.randomUUID()) {
   const now = new Date().toISOString();
   const job: Job = {
     ...input,
+    responsible_name: input.responsible_name ?? "",
     id,
     status: "measured",
     photo_path: null,

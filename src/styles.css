@@ -681,6 +681,37 @@ h1 > span {
   font-weight: 650;
   overflow-wrap: anywhere;
 }
+.job-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 7px 10px;
+}
+.job-title h3 {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.job-responsible {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 4px;
+  flex: 0 1 auto;
+  max-width: 100%;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: #edf1e7;
+  color: #526454;
+  font-size: 9px;
+  line-height: 1.5;
+}
+.job-responsible > svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.job-responsible > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .job-address {
   display: flex;
   gap: 5px;
@@ -2221,6 +2252,9 @@ h1 > span {
   }
   .job-card h3 {
     font-size: 18px;
+  }
+  .job-responsible {
+    font-size: 10px;
   }
   .job-address {
     font-size: 11px;

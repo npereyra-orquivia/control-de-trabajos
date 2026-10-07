@@ -40,6 +40,7 @@ import {
   type Status,
 } from "./types";
 import { supabase } from "./lib/supabase";
+import { resolveLoginEmail } from "./lib/login.mjs";
 import { getMaterialOptions, matchesJob } from "./lib/filters.mjs";
 import {
   acquireDemo,
@@ -91,7 +92,7 @@ function errorMessage(error: unknown): string {
         ? String(error.message)
         : "No se ha podido completar la operación.";
   if (/Invalid login credentials/i.test(raw))
-    return "El correo o la contraseña no son correctos.";
+    return "El usuario, el correo o la contraseña no son correctos.";
   if (/Failed to fetch|NetworkError|fetch failed/i.test(raw))
     return "No hay conexión. Comprueba la red y vuelve a intentarlo.";
   if (code === "email_not_confirmed" || /Email not confirmed/i.test(raw))
@@ -839,8 +840,8 @@ export default function App() {
               <div>
                 <h3>Acceso solo para tu equipo</h3>
                 <p>
-                  Las cuentas se dan de alta desde Supabase, con correo y
-                  contraseña. La aplicación admite hasta cinco usuarios activos.
+                  Entra con tu usuario o correo y contraseña. La aplicación
+                  admite hasta cinco usuarios activos que comparten los trabajos.
                 </p>
                 {demo && (
                   <p>
@@ -939,6 +940,8 @@ export default function App() {
           onSave={saveJob}
           acquire={acquire}
           person={person}
+          profiles={profiles}
+          currentName={profile?.display_name || ""}
           lock={locks.find((lock) => lock.job_id === editor.job?.id)}
           demo={demo}
           online={online}
@@ -974,7 +977,8 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
     setMessage("");
     setNotice("");
     try {
-      const email = String(form.get("email")).trim();
+      const identifier = String(form.get("email")).trim();
+      const email = mode === "register" ? identifier : resolveLoginEmail(identifier);
       const password = String(form.get("password"));
       if (mode === "register") {
         const name = String(form.get("display_name")).trim();
@@ -1084,12 +1088,12 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
                 </label>
               )}
               <label>
-                Correo electrónico
+                {mode === "register" ? "Correo electrónico" : "Correo o usuario"}
                 <input
-                  type="email"
+                  type={mode === "register" ? "email" : "text"}
                   name="email"
                   autoComplete="username"
-                  placeholder="tu@correo.com"
+                  placeholder={mode === "register" ? "tu@correo.com" : "Ej. andres o tu@correo.com"}
                   disabled={busy}
                   required
                 />
@@ -1235,7 +1239,13 @@ function JobCard({
             : job.id.slice(0, 5).toUpperCase()}
         </span>
       </div>
-      <h3>{job.store_name}</h3>
+      <div className="job-title">
+        <h3>{job.store_name}</h3>
+        <span className="job-responsible">
+          <Users size={12} />
+          <span>Responsable: {job.responsible_name?.trim() || "Sin asignar"}</span>
+        </span>
+      </div>
       <p className="job-address">
         <MapPin size={14} />
         {job.address || "Sin dirección añadida"}
@@ -1321,6 +1331,8 @@ function JobEditor({
   onSave,
   acquire,
   person,
+  profiles,
+  currentName,
   lock,
   demo,
   online,
@@ -1330,6 +1342,8 @@ function JobEditor({
   onSave: (input: JobInput, status?: Status, photo?: File) => Promise<void>;
   acquire: (id: string, token: string) => Promise<boolean>;
   person: (id: string) => string;
+  profiles: Profile[];
+  currentName: string;
   lock?: JobLock;
   demo: boolean;
   online: boolean;
@@ -1343,8 +1357,17 @@ function JobEditor({
     thickness: String(job?.thickness_mm ?? ""),
     quantity: job?.quantity || 1,
     material: job ? job.material : "coco",
+    responsible_name: job ? job.responsible_name ?? "" : currentName,
     notes: job?.notes || "",
   });
+  const activeResponsibleNames = [
+    ...new Set(
+      profiles
+        .filter((item) => item.active)
+        .map((item) => item.display_name.trim())
+        .filter(Boolean),
+    ),
+  ];
   const [busy, setBusy] = useState(false);
   const [expired, setExpired] = useState(false);
   const [error, setError] = useState("");
@@ -1455,6 +1478,7 @@ function JobEditor({
           thickness_mm: values.thickness === "" ? null : Number(values.thickness),
           quantity: Number(values.quantity),
           material: values.material,
+          responsible_name: values.responsible_name,
           notes: values.notes,
         },
         status,
@@ -1553,6 +1577,27 @@ function JobEditor({
               required
               disabled={!measurementsEditable}
             />
+          </label>
+          <label>
+            Responsable
+            <select
+              value={values.responsible_name}
+              onChange={(event) =>
+                setValues({ ...values, responsible_name: event.target.value })
+              }
+              disabled={!canEdit}
+            >
+              <option value="">Sin asignar</option>
+              {values.responsible_name &&
+                !activeResponsibleNames.includes(values.responsible_name) && (
+                  <option value={values.responsible_name}>
+                    {values.responsible_name} · Guardado
+                  </option>
+                )}
+              {activeResponsibleNames.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
           </label>
           <label>
             Dirección

@@ -14,6 +14,7 @@ export interface Job {
   thickness_mm: number | null;
   quantity: number;
   material: string;
+  responsible_name: string;
   notes: string;
   status: Status;
   photo_path: string | null;
@@ -45,6 +46,7 @@ export type JobInput = Pick<
   | "thickness_mm"
   | "quantity"
   | "material"
+  | "responsible_name"
   | "notes"
 >;
 export type JobPatch = Partial<JobInput & Pick<Job, "status" | "photo_path">>;

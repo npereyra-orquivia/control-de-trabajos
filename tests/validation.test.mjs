@@ -45,3 +45,9 @@ test('avance de trabajo conserva orden y no vuelve a abrir terminados', () => {
   assert.equal(nextStatus('measured'), 'cutting'); assert.equal(nextStatus('cutting'), 'cut')
   assert.equal(nextStatus('cut'), 'installed'); assert.equal(nextStatus('installed'), null)
 })
+test('responsable conserva el nombre, recorta espacios y admite fichas antiguas sin asignar', () => {
+  const job = { store_name: 'Centro', address: '', material: '', notes: '', width_cm: 95, length_cm: 150, quantity: 1 }
+  assert.equal(validateInput(job).responsible_name, '')
+  assert.equal(validateInput({ ...job, responsible_name: ' Andrés ' }).responsible_name, 'Andrés')
+  for (const value of ['a'.repeat(101), 12, {}]) assert.throws(() => validateInput({ ...job, responsible_name: value }), /responsable/)
+})

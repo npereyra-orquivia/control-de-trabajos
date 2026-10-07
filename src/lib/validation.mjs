@@ -10,6 +10,9 @@ export function parseMeasure(value) {
   return number;
 }
 export function validateInput(input) {
+  const responsible = input.responsible_name ?? "";
+  if (typeof responsible !== "string" || responsible.trim().length > 100)
+    throw new Error("El nombre del responsable debe tener como máximo 100 caracteres.");
   const thickness = input.thickness_mm === undefined ? null : input.thickness_mm;
   if (thickness !== null && thickness !== 17 && thickness !== 20)
     throw new Error("El grosor debe ser 17 mm, 20 mm o «No sé».");
@@ -42,6 +45,7 @@ export function validateInput(input) {
     throw new Error("Revisa las medidas del felpudo.");
   return {
     ...input,
+    responsible_name: responsible.trim(),
     thickness_mm: thickness,
     store_name: input.store_name.trim(),
     address: input.address.trim(),

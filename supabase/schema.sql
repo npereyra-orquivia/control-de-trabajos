@@ -146,6 +146,8 @@ create table if not exists public.jobs (
   thickness_mm smallint constraint jobs_thickness_mm_check
     check (thickness_mm is null or thickness_mm in (17, 20)),
   material text not null default '' check (char_length(material) <= 100),
+  responsible_name text not null default '' constraint jobs_responsible_name_check
+    check (char_length(btrim(responsible_name)) <= 100),
   notes text not null default '' check (char_length(notes) <= 3000),
   status text not null default 'measured'
     check (status in ('measured', 'cutting', 'cut', 'installed')),
@@ -181,6 +183,9 @@ alter table public.jobs add column if not exists cutting_by uuid references auth
 alter table public.jobs add column if not exists cut_by uuid references auth.users(id) on delete set null;
 alter table public.jobs add column if not exists installed_by uuid references auth.users(id) on delete set null;
 alter table public.jobs add column if not exists thickness_mm smallint;
+alter table public.jobs add column if not exists responsible_name text not null default '';
+alter table public.jobs alter column responsible_name set default '';
+alter table public.jobs alter column responsible_name set not null;
 do $$
 begin
   if not exists (
@@ -189,6 +194,13 @@ begin
   ) then
     alter table public.jobs add constraint jobs_thickness_mm_check
       check (thickness_mm is null or thickness_mm in (17, 20));
+  end if;
+  if not exists (
+    select 1 from pg_catalog.pg_constraint
+    where conrelid = 'public.jobs'::regclass and conname = 'jobs_responsible_name_check'
+  ) then
+    alter table public.jobs add constraint jobs_responsible_name_check
+      check (char_length(btrim(responsible_name)) <= 100);
   end if;
 end;
 $$;
@@ -219,6 +231,7 @@ declare
   measurement_changed boolean;
 begin
   new.store_name := btrim(new.store_name);
+  new.responsible_name := btrim(new.responsible_name);
   new.photo_path := nullif(btrim(new.photo_path), '');
   new.updated_at := pg_catalog.now();
   new.updated_by := actor;
@@ -434,7 +447,7 @@ begin
     select 1 from pg_catalog.jsonb_object_keys(p_patch) as patch_key(key)
     where key not in (
       'store_name', 'address', 'width_cm', 'length_cm', 'quantity', 'thickness_mm',
-      'material', 'notes', 'status', 'photo_path'
+      'material', 'responsible_name', 'notes', 'status', 'photo_path'
     )
   ) then
     raise exception 'Los cambios incluyen campos no permitidos.' using errcode = '22023';
@@ -468,6 +481,7 @@ begin
     quantity = case when p_patch ? 'quantity' then (p_patch ->> 'quantity')::integer else current_job.quantity end,
     thickness_mm = case when p_patch ? 'thickness_mm' then (p_patch ->> 'thickness_mm')::smallint else current_job.thickness_mm end,
     material = case when p_patch ? 'material' then p_patch ->> 'material' else current_job.material end,
+    responsible_name = case when p_patch ? 'responsible_name' then p_patch ->> 'responsible_name' else current_job.responsible_name end,
     notes = case when p_patch ? 'notes' then p_patch ->> 'notes' else current_job.notes end,
     status = case when p_patch ? 'status' then p_patch ->> 'status' else current_job.status end,
     photo_path = case when p_patch ? 'photo_path' then p_patch ->> 'photo_path' else current_job.photo_path end
