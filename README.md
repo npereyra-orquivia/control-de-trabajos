@@ -2,6 +2,12 @@
 
 Aplicación web para móvil para coordinar la medida, el corte y la colocación de felpudos, local por local. Usa React, TypeScript y Vite; Supabase guarda las cuentas, los trabajos y las fotos privadas; GitHub Pages sirve la aplicación.
 
+- **URL de la aplicación:** [Control de trabajos](https://npereyra-orquivia.github.io/control-de-trabajos/).
+- **Código:** [Repositorio en GitHub](https://github.com/npereyra-orquivia/control-de-trabajos).
+- **Proyecto Supabase:** [Orquivia — panel de administración](https://supabase.com/dashboard/project/umpbktnavrxicttqwffs). URL del servicio: `https://umpbktnavrxicttqwffs.supabase.co`.
+
+El proyecto Supabase ya está configurado con el esquema y las fotos privadas. El registro público está cerrado y hay **cinco plazas de usuarios activos**. Las cuentas de las personas siguen pendientes porque aún no se han definido sus correos: deben crearse desde el panel de Supabase cuando estén disponibles.
+
 ## Uso diario
 
 1. Inicia sesión con tu correo y contraseña.
@@ -14,6 +20,8 @@ Los estados son **Medido → En corte → Cortado → Colocado**. Se puede busca
 La lista consulta los datos compartidos cada **120 segundos** y también se puede actualizar a mano. La sincronización mantiene las ediciones abiertas. Para editar un trabajo se pide un bloqueo a Supabase: solo una persona puede mantenerlo a la vez. El bloqueo dura **180 segundos**, se renueva cada **45 segundos** mientras se edita y se libera al terminar. Si la conexión se corta o se cierra el navegador, caduca por sí solo. Cada guardado comprueba además la versión del trabajo para impedir que una edición antigua sobrescriba cambios nuevos.
 
 ## Preparar Supabase
+
+El proyecto **Control de trabajos**, de la organización **Orquivia**, ya tiene instalado el esquema. Para ese proyecto queda pendiente el alta de las cinco personas del paso 4. Los demás pasos permiten preparar otro proyecto desde cero.
 
 1. Crea o elige el proyecto Supabase que se usará para esta aplicación.
 2. Abre **SQL Editor**, copia todo el archivo [`supabase/schema.sql`](supabase/schema.sql) y ejecútalo. El archivo crea las tablas, las funciones de edición, los permisos y el bucket privado de fotos.
