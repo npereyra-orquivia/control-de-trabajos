@@ -10,8 +10,8 @@ El proyecto Supabase está configurado para entrar inmediatamente después del r
 
 ## Uso diario
 
-1. Si aún no tienes cuenta, pulsa **Registrarme**, completa tus datos, repite la contraseña y pulsa **Crear cuenta**. Entras directamente en la aplicación. En las siguientes visitas, inicia sesión con tu correo y contraseña.
-2. Crea un trabajo para el local y guarda **ancho y largo en centímetros**. Elige el **espesor en milímetros: 20 mm, 17 mm o No sé**, y el material: **Coco, Metálico o No hay**. «No sé» se guarda como espesor desconocido (`null`), nunca como cero.
+1. Inicia sesión con el **usuario o correo y contraseña** de tu cuenta. Las cuentas preparadas para el equipo admiten su nombre de usuario; los correos existentes siguen funcionando. Si aún quedan plazas y necesitas una nueva cuenta, pulsa **Registrarme**. Las contraseñas y el listado privado de accesos no se publican en el repositorio.
+2. Crea un trabajo para el local y guarda **ancho y largo en centímetros**. Elige el **espesor en milímetros: 20 mm, 17 mm o No sé**, y el material: **Coco, Metálico o No hay**. «No sé» se guarda como espesor desconocido (`null`), nunca como cero. El **responsable** aparece junto al nombre del local y se elige entre los miembros activos. Una nueva medición se asigna inicialmente a quien la crea; las fichas anteriores sin asignación permanecen sin asignar. Se puede cambiar el responsable mientras el trabajo está pendiente, respetando la reserva de edición.
 3. La persona que corta abre el trabajo y actualiza su estado.
 4. Al colocar el felpudo, adjunta la foto del trabajo terminado y márcalo como colocado.
 
