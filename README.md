@@ -82,6 +82,14 @@ El flujo comprueba la configuración, ejecuta las pruebas, compila la aplicació
 
 Las pruebas de base de datos ejecutan el esquema en PGlite con Auth y Storage simulados. Cubren permisos, cinco usuarios, medidas y espesor, bloqueos, caducidad, versiones, fases y fotos. La conexión HTTP, las cargas reales de Storage y la concurrencia entre dispositivos deben verificarse también con el proyecto de Supabase conectado.
 
+## Tipos de trabajo, revisión e informes
+
+Los apartados **Felpudos** y **Deshumidificadores** mantienen sus filtros y métricas por separado. Cada felpudo es un trabajo; los aparatos se registran por local con su cantidad. Los deshumidificadores pasan de **Pendiente de colocar** a **Colocado**, con al menos una fotografía.
+
+En un felpudo colocado, **Revisión de colocación** permite marcarlo correcto o abrir una corrección con su explicación: **Recortar** vuelve a ajuste; **Añadir una parte** y **Reponer entero** vuelven a medición, corte y colocación. Las fotos y medidas anteriores permanecen en el historial. El cierre de una corrección exige nuevas fotografías, y la pieza añadida se identifica como tal para no confundir sus medidas con el felpudo original.
+
+**Exportar informe** descarga un PDF de los trabajos visibles según los filtros, exclusivamente del apartado activo. Incluye el logo completo, fecha, autor del informe, local, medidas o unidades, estado, fechas de corte/colocación y fotografías cuadradas sin recortar. No incluye responsables, editores, notas, espesor ni historial interno. Las fotos se incorporan al PDF desde Storage privado; no se publican enlaces con acceso a ellas. Si falla la descarga de una foto, se cancela el informe para poder reintentar completo.
+
 ## Añadir al inicio del móvil
 
 - **iPhone:** abre la web en Safari, pulsa **Compartir → Añadir a pantalla de inicio**.
