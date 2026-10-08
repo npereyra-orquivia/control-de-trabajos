@@ -1,4 +1,5 @@
 import type { Job, JobLock, JobPatch, JobInput, Profile } from "../types";
+import { nextStatus } from "./validation.mjs";
 export const demoProfile: Profile = {
   id: "demo-ana",
   display_name: "Ana García",
@@ -46,7 +47,7 @@ function sampleJobs(): Job[] {
       responsible_name: "Luis Martín",
       thickness_mm: 17,
       notes: "Dejar preparado para la ruta de mañana.",
-      status: "cutting" as const,
+      status: "measured" as const,
       created_by: "demo-luis",
     },
     {
@@ -68,8 +69,8 @@ function sampleJobs(): Job[] {
     photo_path: null,
     measured_at: now,
     measured_by: job.created_by,
-    cutting_at: index > 0 ? now : null,
-    cutting_by: index > 0 ? job.created_by : null,
+    cutting_at: null,
+    cutting_by: null,
     cut_at: index > 1 ? now : null,
     cut_by: index > 1 ? job.created_by : null,
     installed_at: null,
@@ -87,6 +88,7 @@ export function demoJobs(): Job[] {
       if (Array.isArray(storedJobs))
         return storedJobs.map((job) => ({
           ...job,
+          status: String(job.status) === "cutting" ? "measured" : job.status,
           thickness_mm: job.thickness_mm ?? null,
           responsible_name: job.responsible_name ?? "",
         }));
@@ -184,8 +186,13 @@ export function updateDemo(
     throw new Error(
       "El trabajo ha cambiado. Cierra y vuelve a abrirlo para ver la última información.",
     );
+  if (old.status === "installed") throw new Error("El felpudo ya está colocado.");
+  if (patch.quantity !== undefined && patch.quantity !== 1)
+    throw new Error("Cada trabajo corresponde a un solo felpudo.");
+  if (patch.status && patch.status !== old.status && patch.status !== nextStatus(old.status))
+    throw new Error("Sigue el orden: Medido, Cortado y Colocado.");
   if (patch.status === "installed" && !patch.photo_path)
-    throw new Error("Añade una foto antes de terminar.");
+    throw new Error("Añade una foto antes de marcar Colocado.");
   const now = new Date().toISOString();
   const job = {
     ...old,
@@ -194,10 +201,6 @@ export function updateDemo(
     updated_by: demoProfile.id,
     version: old.version + 1,
   };
-  if (patch.status === "cutting") {
-    job.cutting_at = now;
-    job.cutting_by = demoProfile.id;
-  }
   if (patch.status === "cut") {
     job.cut_at = now;
     job.cut_by = demoProfile.id;

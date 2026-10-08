@@ -28,12 +28,8 @@ export function validateInput(input) {
     throw new Error(
       "La dirección, el material o las notas son demasiado largos.",
     );
-  if (
-    !Number.isInteger(input.quantity) ||
-    input.quantity < 1 ||
-    input.quantity > 100
-  )
-    throw new Error("La cantidad debe estar entre 1 y 100.");
+  if (input.quantity !== 1)
+    throw new Error("Cada trabajo corresponde a un solo felpudo.");
   if (
     !Number.isFinite(input.width_cm) ||
     input.width_cm <= 0 ||
@@ -68,7 +64,5 @@ export function validatePhoto(file) {
     throw new Error("La foto supera 10 MB. Elige una más pequeña.");
 }
 export function nextStatus(status) {
-  return (
-    { measured: "cutting", cutting: "cut", cut: "installed" }[status] ?? null
-  );
+  return { measured: "cut", cut: "installed" }[status] ?? null;
 }
