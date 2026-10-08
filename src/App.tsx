@@ -10,11 +10,13 @@ import {
   ArrowDown,
   ArrowRight,
   Camera,
+  AirVent,
   Check,
   CheckCheck,
   ChevronDown,
   ClipboardList,
   Clock3,
+  Download,
   Info,
   LoaderCircle,
   LockKeyhole,
@@ -35,6 +37,9 @@ import {
   type JobInput,
   type JobLock,
   type JobPatch,
+  type JobEvent,
+  type JobKind,
+  type ReworkKind,
   type Profile,
   type Status,
 } from "./types";
@@ -43,6 +48,7 @@ import { resolveLoginEmail } from "./lib/login.mjs";
 import { getMaterialOptions, getResponsibleOptions, matchesJob, sortJobsForWorkspace } from "./lib/filters.mjs";
 import { appendPhotoPaths, jobPhotoPaths, photoPatchIsSaved } from "./lib/photos.mjs";
 import { combineJobNotes, editableNotesLimit, prepareJobNotes } from "./lib/notes.mjs";
+import { getJobStages, jobKind, statusLabel, reviewPatchIsSaved } from "./lib/workflow.mjs";
 import {
   acquireDemo,
   createDemo,
@@ -51,6 +57,8 @@ import {
   demoProfile,
   demoProfiles,
   releaseDemo,
+  reviewDemo,
+  demoEvents,
   updateDemo,
 } from "./lib/demo";
 import {
@@ -65,12 +73,18 @@ type EditorState = {
   token: string | null;
   readonly: boolean;
   draftId?: string;
+  kind?: JobKind;
 };
 const icons = {
+  pending_measurement: Ruler,
+  pending_adjustment: Scissors,
+  pending_installation: AirVent,
   measured: Ruler,
   cut: Scissors,
   installed: CheckCheck,
 };
+const reviewLabels = { pending: "Pendiente revisar", approved: "Revisado", needs_adjustment: "Corrección pendiente" };
+const reworkLabels = { trim: "Recortar", add: "Añadir una parte", replace: "Reponer entero" };
 const format = (number: number) =>
   new Intl.NumberFormat("es-ES", { maximumFractionDigits: 2 }).format(number);
 const dateTime = (value: string) =>
@@ -143,7 +157,7 @@ function Brand() {
       <AppLogo className="brand-icon" />
       <span>
         control<span className="brand-light"> de trabajos</span>
-        <small>FELPUDOS · EQUIPO</small>
+        <small>FELPUDOS · DESHUMIDIFICADORES</small>
       </span>
     </div>
   );
@@ -161,6 +175,9 @@ export default function App() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [kind, setKind] = useState<JobKind>("mat");
+  const [reviewFilter, setReviewFilter] = useState("all");
   const [filter, setFilter] = useState<Status | "all">("all");
   const [materialFilter, setMaterialFilter] = useState("all");
   const [responsibleFilter, setResponsibleFilter] = useState("all");
@@ -170,6 +187,10 @@ export default function App() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [online, setOnline] = useState(navigator.onLine);
+  const sectionFilters = useRef<Partial<Record<JobKind, {
+    status: Status | "all"; material: string; responsible: string;
+    thickness: "all" | "17" | "20" | "unknown"; search: string; review: string;
+  }>>>({});
   const refreshInFlight = useRef(false);
   const refreshGeneration = useRef(0);
   const photoUploads = useRef(new Map<File, string>());
@@ -388,7 +409,7 @@ export default function App() {
   async function saveJob(input: JobInput, newStatus?: Status, photos: File[] = []) {
     if (!editor) return;
     try {
-      const validated = validateInput(input);
+      const validated = validateInput(input, editor.job ? newStatus || editor.job.status : input.status);
       if (!editor.job) {
         const draftId = editor.draftId!;
         if (demo) createDemo(validated, draftId);
@@ -413,6 +434,7 @@ export default function App() {
         }
       } else {
         const patch: JobPatch = editor.job.status === "installed" ? {} : { ...validated };
+        delete patch.job_kind;
         if (newStatus) patch.status = newStatus;
         if (photos.length) {
           if (newStatus !== "installed" && editor.job.status !== "installed")
@@ -487,9 +509,28 @@ export default function App() {
       newStatus === "installed"
         ? `Trabajo terminado. ${photos.length === 1 ? "Foto guardada" : "Fotos guardadas"}.`
         : !editor.job
-          ? "Medición guardada. Ya está lista para cortar."
+          ? input.job_kind === "dehumidifier" ? "Local registrado. Sus unidades quedan pendientes de colocar." : input.status === "pending_measurement" ? "Local guardado. Queda pendiente de medir." : "Medición guardada. Ya está lista para cortar."
           : editor.job.status === "installed" ? "Fotos añadidas al trabajo." : "Trabajo actualizado.",
     );
+    await closeEditor();
+  }
+  async function reviewJob(action: "approve" | ReworkKind, notes: string) {
+    if (!editor?.job || !editor.token) return;
+    if (demo) reviewDemo(editor.job.id, editor.token, editor.job.version, action, notes);
+    else {
+      const result = await supabase!.rpc("review_job", {
+        p_job_id: editor.job.id,
+        p_token: editor.token,
+        p_expected_version: editor.job.version,
+        p_action: action,
+        p_notes: notes,
+      });
+      if (result.error) {
+        const current = await supabase!.from("jobs").select("*").eq("id", editor.job.id).single();
+        if (current.error || !reviewPatchIsSaved(current.data as Job, editor.job, action, notes)) throw result.error;
+      }
+    }
+    setToast(action === "approve" ? "Felpudo revisado. Todo correcto." : "Corrección registrada. El trabajo vuelve a pendientes y conserva su historial.");
     await closeEditor();
   }
   async function signOut() {
@@ -527,30 +568,75 @@ export default function App() {
       />
     );
 
-  const filtered = sortJobsForWorkspace(jobs.filter((job) => matchesJob(job, {
+  const kindJobs = jobs.filter((job) => jobKind(job) === kind);
+  const listStatuses = kind === "dehumidifier"
+    ? STATUSES.filter((item) => ["pending_installation", "installed"].includes(item.id))
+    : STATUSES.filter((item) => item.id !== "pending_installation");
+  const filtered = sortJobsForWorkspace(kindJobs.filter((job) => matchesJob(job, {
     status: filter,
-    material: materialFilter,
-    thickness: thicknessFilter,
+    material: kind === "mat" ? materialFilter : "all",
+    thickness: kind === "mat" ? thicknessFilter : "all",
     responsible: responsibleFilter,
     search,
-  })));
-  const materialOptions = getMaterialOptions(jobs, MATERIALS);
-  const responsibleOptions = getResponsibleOptions(jobs, profiles);
+  }) && (kind !== "mat" || reviewFilter === "all" || ((job.review_status || "pending") === reviewFilter && (reviewFilter === "needs_adjustment" || job.status === "installed")))));
+  const materialOptions = getMaterialOptions(kindJobs, MATERIALS);
+  const responsibleOptions = getResponsibleOptions(kindJobs, profiles);
   if (responsibleFilter !== "all" && !responsibleOptions.some((item) => item.value === responsibleFilter)) {
     responsibleOptions.push({ value: responsibleFilter, label: responsibleFilter.replace(/^responsible:/, "") });
   }
   if (materialFilter !== "all" && !materialOptions.some((item) => item.value === materialFilter)) {
     materialOptions.push({ value: materialFilter, label: materialFilter.replace(/^other:/, "") });
   }
-  const filtersActive = !!search.trim() || filter !== "all" || materialFilter !== "all" || thicknessFilter !== "all" || responsibleFilter !== "all";
+  const filtersActive = !!search.trim() || filter !== "all" || (kind === "mat" && (materialFilter !== "all" || thicknessFilter !== "all" || reviewFilter !== "all")) || responsibleFilter !== "all";
+  async function downloadReport() {
+    if (exporting || !filtered.length) return;
+    setExporting(true);
+    setError("");
+    try {
+      const { exportReport } = await import("./lib/reports.mjs");
+      await exportReport(filtered, kind, async (paths) => {
+        if (demo) return Object.fromEntries(paths.map((path) => [path, path]));
+        if (!paths.length) return {};
+        const result = await supabase!.storage.from("job-photos").createSignedUrls(paths, 3600);
+        if (result.error) throw result.error;
+        return Object.fromEntries((result.data || []).flatMap((item) => item.path && item.signedUrl ? [[item.path, item.signedUrl]] : []));
+      }, import.meta.env.BASE_URL);
+      setToast("Informe descargado con los trabajos de esta selección.");
+    } catch (reportError) { setError(errorMessage(reportError)); }
+    finally { setExporting(false); }
+  }
   function clearFilters() {
     setSearch("");
     setFilter("all");
     setMaterialFilter("all");
     setThicknessFilter("all");
     setResponsibleFilter("all");
+    setReviewFilter("all");
   }
-  const pending = jobs.filter((job) => job.status !== "installed").length;
+  function changeKind(nextKind: JobKind) {
+    if (kind === nextKind) return;
+    sectionFilters.current[kind] = { status: filter, material: materialFilter, responsible: responsibleFilter, thickness: thicknessFilter, search, review: reviewFilter };
+    const saved = sectionFilters.current[nextKind];
+    setKind(nextKind);
+    setFilter(saved?.status || "all");
+    setMaterialFilter(saved?.material || "all");
+    setResponsibleFilter(saved?.responsible || "all");
+    setThicknessFilter(saved?.thickness || "all");
+    setSearch(saved?.search || "");
+    setReviewFilter(saved?.review || "all");
+  }
+  function newJob() {
+    setEditor({ job: null, token: null, readonly: false, draftId: crypto.randomUUID(), kind });
+  }
+  const pending = kindJobs.filter((job) => job.status !== "installed").length;
+  const units = (items: Job[]) => items.reduce((total, job) => total + job.quantity, 0);
+  const metricTiles = kind === "dehumidifier" ? [
+    { id: "all", label: "Unidades previstas", count: units(kindJobs), Icon: AirVent },
+    { id: "pending_installation", label: "Por colocar", count: units(kindJobs.filter((job) => job.status !== "installed")), Icon: Clock3 },
+    { id: "installed", label: "Colocadas", count: units(kindJobs.filter((job) => job.status === "installed")), Icon: CheckCheck },
+  ] : listStatuses.filter(({ id }) => !["pending_measurement", "pending_adjustment"].includes(id) || kindJobs.some((job) => job.status === id)).map(({ id, label }) => ({
+    id, label, count: kindJobs.filter((job) => job.status === id).length, Icon: icons[id],
+  }));
   const person = (id: string) =>
     id
       ? profiles.find((item) => item.id === id)?.display_name ||
@@ -620,44 +706,39 @@ export default function App() {
         )}
         {tab === "jobs" && (
           <>
+            <div className="work-kind-tabs" role="group" aria-label="Tipo de trabajo">
+              <button className={kind === "mat" ? "selected" : ""} aria-pressed={kind === "mat"} onClick={() => changeKind("mat")}><Ruler size={18} />Felpudos</button>
+              <button className={kind === "dehumidifier" ? "selected" : ""} aria-pressed={kind === "dehumidifier"} onClick={() => changeKind("dehumidifier")}><AirVent size={18} />Deshumidificadores</button>
+            </div>
             <section className="page-heading">
               <div>
                 <p className="eyebrow">
-                  DEL PRIMER CENTÍMETRO A LA ÚLTIMA FOTO
+                  {kind === "mat" ? "DE LA MEDIDA A LA REVISIÓN" : "CADA APARATO EN SU LOCAL"}
                 </p>
                 <h1>
                   Todo en su sitio<span>.</span>
                 </h1>
                 <p className="subtitle">
-                  Mide, corta y coloca. Tu equipo, al día.
+                  {kind === "mat" ? "Mide, corta, coloca y revisa. Tu equipo, al día." : "Registra las unidades, colócalas y añade sus fotos."}
                 </p>
               </div>
               <button
                 className="primary new-job"
-                onClick={() =>
-                  setEditor({
-                    job: null,
-                    token: null,
-                    readonly: false,
-                    draftId: crypto.randomUUID(),
-                  })
-                }
+                onClick={newJob}
                 disabled={!online || (!demo && !profile?.active)}
               >
                 <Plus size={20} />
-                Nueva medición
+                {kind === "mat" ? "Nuevo felpudo" : "Registrar deshumidificadores"}
               </button>
             </section>
-            <section className="status-grid" aria-label="Filtrar por estado">
-              {STATUSES.map(({ id, label }) => {
-                const Icon = icons[id];
-                const count = jobs.filter((job) => job.status === id).length;
+            <section className={`status-grid ${metricTiles.length > 3 ? "expanded-status-grid" : ""}`} aria-label={kind === "mat" ? "Filtrar por estado de felpudos" : "Unidades de deshumidificadores"}>
+              {metricTiles.map(({ id, label, count, Icon }) => {
                 return (
                   <button
                     key={id}
                     className={`status-tile ${id} ${filter === id ? "selected" : ""}`}
                     aria-pressed={filter === id}
-                    onClick={() => setFilter(filter === id ? "all" : id)}
+                    onClick={() => setFilter(filter === id ? "all" : id as Status | "all")}
                   >
                     <div className="tile-top">
                       <span className="status-icon">
@@ -680,8 +761,8 @@ export default function App() {
                 <div>
                   <h2>
                     {filter === "all"
-                      ? "Los trabajos"
-                      : STATUSES.find((item) => item.id === filter)?.label}
+                      ? kind === "mat" ? "Los felpudos" : "Los locales"
+                      : statusLabel(filter)}
                     <span>{filtered.length}</span>
                   </h2>
                   <p>
@@ -709,6 +790,10 @@ export default function App() {
                 </div>
               </div>
               <div className="list-toolbar">
+                <button className="button report-button" onClick={() => void downloadReport()} disabled={exporting || !filtered.length || (!demo && !online)}>
+                  {exporting ? <LoaderCircle size={17} className="spin" /> : <Download size={17} />}
+                  {exporting ? "Preparando informe…" : "Exportar informe"}
+                </button>
                 <label className="search-box">
                   <Search size={18} />
                   <input
@@ -736,7 +821,7 @@ export default function App() {
                     }
                   >
                     <option value="all">Todos los estados</option>
-                    {STATUSES.map((item) => (
+                    {listStatuses.map((item) => (
                       <option key={item.id} value={item.id}>
                         {item.short}
                       </option>
@@ -746,7 +831,7 @@ export default function App() {
                 </label>
               </div>
               <div className="detail-filters">
-                <label className="filter-field">
+                {kind === "mat" && <><label className="filter-field">
                   <span>Material</span>
                   <div className="filter-select">
                     <select
@@ -777,7 +862,7 @@ export default function App() {
                     </select>
                     <ChevronDown size={16} />
                   </div>
-                </label>
+                </label></>}
                 <label className="filter-field filter-responsible">
                   <span>Responsable</span>
                   <div className="filter-select">
@@ -794,13 +879,24 @@ export default function App() {
                     <ChevronDown size={16} />
                   </div>
                 </label>
+                {kind === "mat" && <label className="filter-field filter-review">
+                  <span>Revisión</span>
+                  <div className="filter-select">
+                    <select aria-label="Filtrar por revisión" value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value)}>
+                      <option value="all">Todas</option>
+                      <option value="pending">Pendiente revisar</option>
+                      <option value="approved">Revisado</option>
+                      <option value="needs_adjustment">Corrección pendiente</option>
+                    </select><ChevronDown size={16} />
+                  </div>
+                </label>}
                 {filtersActive && (
                   <button className="clear-filters" onClick={clearFilters}>
                     <X size={15} /> Limpiar filtros
                   </button>
                 )}
               </div>
-              {thicknessFilter === "unknown" && (
+              {kind === "mat" && thicknessFilter === "unknown" && (
                 <p className="filter-help">Incluye espesores sin indicar y valores diferentes de 17/20 mm guardados en las notas.</p>
               )}
               {initialLoading ? (
@@ -814,29 +910,23 @@ export default function App() {
                   <h3>
                     {filtersActive
                       ? "No hay trabajos con este filtro"
-                      : "La primera medición empieza aquí"}
+                      : kind === "mat" ? "El primer felpudo empieza aquí" : "Registra el primer local"}
                   </h3>
                   <p>
                     {filtersActive
                       ? "Prueba otra búsqueda o limpia los filtros."
-                      : "Añade una tienda y sus medidas para que el equipo pueda empezar."}
+                      : kind === "mat" ? "Añade una tienda. Puedes guardar sus medidas ahora o dejarlas pendientes." : "Indica cuántos aparatos necesita la tienda para que el equipo pueda colocarlos."}
                   </p>
                   <button
                     className="secondary"
                     onClick={() => {
                       if (filtersActive) clearFilters();
-                      else
-                        setEditor({
-                          job: null,
-                          token: null,
-                          readonly: false,
-                          draftId: crypto.randomUUID(),
-                        });
+                      else newJob();
                     }}
                   >
                     {filtersActive
                       ? "Ver todos"
-                      : "Nueva medición"}
+                      : kind === "mat" ? "Nuevo felpudo" : "Registrar local"}
                   </button>
                 </div>
               ) : (
@@ -934,7 +1024,7 @@ export default function App() {
                   De la medida a la foto<span>.</span>
                 </h1>
                 <p className="subtitle">
-                  Tres pasos y todo el equipo tiene la misma información.
+                  Felpudos y deshumidificadores, con fotos e información para todo el equipo.
                 </p>
               </div>
             </section>
@@ -943,7 +1033,7 @@ export default function App() {
                 {
                   icon: Ruler,
                   title: "01 · Mide en la tienda",
-                  text: "Pulsa Nueva medición. Cada trabajo es un felpudo. Escribe el local y sus medidas en centímetros. Puedes usar coma decimal.",
+                  text: "En Felpudos, pulsa Nuevo felpudo. Cada trabajo es una pieza. Escribe el local y sus medidas en centímetros, o guarda el local para medirlo después.",
                 },
                 {
                   icon: Scissors,
@@ -962,6 +1052,14 @@ export default function App() {
                   <p>{item.text}</p>
                 </div>
               ))}
+            </div>
+            <div className="help-card">
+              <ShieldCheck />
+              <div><h3>Revisa la colocación</h3><p>Abre un felpudo colocado y pulsa Está bien si está correcto. Si necesita una corrección, elige Recortar, Añadir una parte o Reponer entero y describe el problema. El trabajo vuelve a pendientes. Las fotos anteriores se conservan en el historial y la corrección necesita fotos nuevas.</p></div>
+            </div>
+            <div className="help-card">
+              <AirVent />
+              <div><h3>Deshumidificadores: unidades y colocación</h3><p>En Deshumidificadores, registra el local y cuántos aparatos necesita. Las métricas cuentan unidades previstas, por colocar y colocadas. Coloca todos los aparatos de ese local, añade al menos una foto y marca Colocado.</p></div>
             </div>
             <div className="help-card">
               <LockKeyhole />
@@ -1001,7 +1099,7 @@ export default function App() {
         )}
         <footer className="footer">
           <span className="footer-brand"><AppLogo />CONTROL DE TRABAJOS</span>
-          <span>Medir bien. Cortar una vez.</span>
+          <span>{kind === "mat" ? "Medir bien. Cortar una vez." : "Cada aparato en su local."}</span>
         </footer>
       </main>
       {editor && (
@@ -1010,6 +1108,7 @@ export default function App() {
           state={editor}
           onClose={closeEditor}
           onSave={saveJob}
+          onReview={reviewJob}
           acquire={acquire}
           person={person}
           profiles={profiles}
@@ -1100,7 +1199,7 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
             El trabajo bien hecho empieza por una buena medida<span>.</span>
           </h1>
           <p>
-            De medir el felpudo a colocarlo.
+            Felpudos y deshumidificadores, de principio a fin.
             <br />
             Un sitio para coordinar todo el trabajo.
           </p>
@@ -1297,13 +1396,15 @@ function JobCard({
   opening: boolean;
 }) {
   const Icon = icons[job.status];
-  const step = STATUSES.findIndex((item) => item.id === job.status);
+  const stages = getJobStages(job);
+  const step = stages.findIndex((item: { id: Status }) => item.id === job.status);
+  const device = jobKind(job) === "dehumidifier";
   return (
     <article className={`job-card ${job.status}`}>
       <div className="card-top">
         <span className={`status-pill ${job.status}`}>
           <span />
-          {STATUSES[step].label}
+          {statusLabel(job.status)}
         </span>
         <span className="job-number">
           #
@@ -1319,11 +1420,17 @@ function JobCard({
           <span>Responsable: {job.responsible_name?.trim() || "Sin asignar"}</span>
         </span>
       </div>
+      {!device && (job.status === "installed" || job.review_status === "needs_adjustment") && <div className="job-review-badges">
+        <span className={`review-badge ${job.review_status || "pending"}`}><ShieldCheck size={13} />{reviewLabels[job.review_status || "pending"]}</span>
+        {job.rework_kind && job.status !== "installed" && <span className="rework-badge">{reworkLabels[job.rework_kind]}</span>}
+      </div>}
+      {device ? <div className="device-quantity-panel"><AirVent size={26} /><strong>{job.quantity}</strong><span>{job.quantity === 1 ? "deshumidificador" : "deshumidificadores"}<small>{job.status === "installed" ? "Colocados en este local" : "Pendientes de colocar en este local"}</small></span></div> : <>
+      {job.rework_kind === "add" && <p className="measure-caption">MEDIDAS DE LA PARTE AÑADIDA</p>}
       <div className="measure-panel">
         <div>
           <small>ANCHO</small>
           <strong>
-            {format(job.width_cm)}
+            {job.width_cm == null ? "—" : format(job.width_cm)}
             <span> cm</span>
           </strong>
         </div>
@@ -1331,7 +1438,7 @@ function JobCard({
         <div>
           <small>LARGO</small>
           <strong>
-            {format(job.length_cm)}
+            {job.length_cm == null ? "—" : format(job.length_cm)}
             <span> cm</span>
           </strong>
         </div>
@@ -1346,8 +1453,9 @@ function JobCard({
           </small>
         </span>
       </div>
-      <div className="card-progress" aria-label={`Paso ${step + 1} de 3`}>
-        {STATUSES.map((item, index) => (
+      </>}
+      <div className="card-progress" aria-label={`Paso ${step + 1} de ${stages.length}`}>
+        {stages.map((item: { id: Status }, index: number) => (
           <span className={index <= step ? "done" : ""} key={item.id} />
         ))}
       </div>
@@ -1395,6 +1503,7 @@ function JobEditor({
   state,
   onClose,
   onSave,
+  onReview,
   acquire,
   person,
   profiles,
@@ -1406,6 +1515,7 @@ function JobEditor({
   state: EditorState;
   onClose: () => Promise<void>;
   onSave: (input: JobInput, status?: Status, photos?: File[]) => Promise<void>;
+  onReview: (action: "approve" | ReworkKind, notes: string) => Promise<void>;
   acquire: (id: string, token: string) => Promise<boolean>;
   person: (id: string) => string;
   profiles: Profile[];
@@ -1415,6 +1525,9 @@ function JobEditor({
   online: boolean;
 }) {
   const job = state.job;
+  const kind = job ? jobKind(job) : state.kind || "mat";
+  const device = kind === "dehumidifier";
+  const stages = getJobStages(job || kind);
   const [preparedNotes] = useState(() => prepareJobNotes(job));
   const [values, setValues] = useState({
     store_name: job?.store_name || "",
@@ -1424,6 +1537,7 @@ function JobEditor({
     material: job ? job.material : "coco",
     responsible_name: job ? job.responsible_name ?? "" : currentName,
     notes: preparedNotes.notes,
+    quantity: String(job?.quantity || 1),
   });
   const activeResponsibleNames = [
     ...new Set(
@@ -1440,6 +1554,8 @@ function JobEditor({
   const [previews, setPreviews] = useState<string[]>([]);
   const [savedPhotos, setSavedPhotos] = useState<{ path: string; url: string }[]>([]);
   const [photoError, setPhotoError] = useState("");
+  const [reviewAction, setReviewAction] = useState<ReworkKind | "">("");
+  const [reviewNotes, setReviewNotes] = useState("");
   const dialogRef = useRef<HTMLDialogElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const photoSectionRef = useRef<HTMLElement>(null);
@@ -1447,7 +1563,7 @@ function JobEditor({
   const renewInFlight = useRef(false);
   const canEdit = !state.readonly && !expired;
   const detailsEditable = canEdit && job?.status !== "installed" && !busy;
-  const measurementsEditable = detailsEditable && (!job || job.status === "measured");
+  const measurementsEditable = detailsEditable && (!job || ["pending_measurement", "measured"].includes(job.status));
   const photoPaths = jobPhotoPaths(job);
   const photoPathsKey = JSON.stringify(photoPaths);
 
@@ -1584,17 +1700,24 @@ function JobEditor({
       if (status === "installed" && !photos.length && !photoPaths.length) {
         photoSectionRef.current?.scrollIntoView({ block: "nearest" });
         document.getElementById("job-photo")?.focus({ preventScroll: true });
-        throw new Error("Te falta hacer o añadir al menos una foto del felpudo colocado. El trabajo sigue Cortado.");
+        throw new Error(device ? "Te falta añadir al menos una foto de los aparatos colocados. Las unidades siguen pendientes." : job?.rework_kind ? "Añade al menos una foto nueva de la corrección terminada. Las fotos anteriores siguen en el historial." : "Te falta hacer o añadir al menos una foto del felpudo colocado. El trabajo sigue pendiente.");
       }
+      const width = device || !values.width.trim() ? null : parseMeasure(values.width);
+      const length = device || !values.length.trim() ? null : parseMeasure(values.length);
+      if (!device && (width == null) !== (length == null)) throw new Error("Completa las dos medidas, o deja ambas vacías para medir más tarde.");
+      if (!device && status === "measured" && (width == null || length == null)) throw new Error("Añade las dos medidas antes de marcar Medido.");
+      const inputStatus = job ? status || job.status : device ? "pending_installation" : width == null ? "pending_measurement" : "measured";
       await onSave(
         {
+          job_kind: kind,
+          status: inputStatus,
           store_name: values.store_name,
           address: job?.address || "",
-          width_cm: parseMeasure(values.width),
-          length_cm: parseMeasure(values.length),
-          thickness_mm: values.thickness === "" ? null : Number(values.thickness),
-          quantity: 1,
-          material: values.material,
+          width_cm: width,
+          length_cm: length,
+          thickness_mm: device || values.thickness === "" ? null : Number(values.thickness),
+          quantity: device ? Number(values.quantity) : 1,
+          material: device ? "" : values.material,
           responsible_name: values.responsible_name,
           notes: combineJobNotes(values.notes, preparedNotes),
         },
@@ -1607,7 +1730,20 @@ function JobEditor({
       setBusy(false);
     }
   }
-  const next = job ? nextStatus(job.status) : null;
+  async function review(action: "approve" | ReworkKind) {
+    if (busy || !canEdit) return;
+    setError("");
+    if (action !== "approve" && !reviewNotes.trim()) { setError("Indica qué hay que corregir para que el equipo sepa cómo continuar."); return; }
+    if (photos.length) { setError("Guarda las fotos preparadas antes de registrar la revisión."); return; }
+    setBusy(true);
+    try {
+      if (!online) throw new Error("Necesitas conexión para guardar la revisión.");
+      await onReview(action, reviewNotes.trim());
+    } catch (reviewError) { setError(errorMessage(reviewError)); }
+    finally { setBusy(false); }
+  }
+  const next = job ? nextStatus(job.status, kind) : null;
+  const readyToInstall = job && ["cut", "pending_adjustment", "pending_installation"].includes(job.status);
   return (
     <dialog
       ref={dialogRef}
@@ -1622,9 +1758,9 @@ function JobEditor({
         <div>
           <p className="eyebrow">
             <AppLogo className="editor-logo" />
-            {job ? "FICHA DEL TRABAJO" : "EMPEZAMOS POR MEDIR"}
+            {device ? "DESHUMIDIFICADORES" : job ? "FICHA DEL FELPUDO" : "NUEVO FELPUDO"}
           </p>
-          <h2 id="editor-title">{job?.store_name || "Nueva medición"}</h2>
+          <h2 id="editor-title">{job?.store_name || (device ? "Registrar local" : "Nuevo felpudo")}</h2>
         </div>
         <button
           className="icon-button"
@@ -1638,12 +1774,12 @@ function JobEditor({
       </div>
       <div className="dialog-body" ref={bodyRef}>
         {job && (
-          <div className="editor-steps">
-            {STATUSES.map((item, index) => {
+          <div className="editor-steps" style={{ gridTemplateColumns: `repeat(${stages.length}, minmax(0, 1fr))` }}>
+            {stages.map((item: { id: Status; label: string }, index: number) => {
               const Icon = icons[item.id];
               const done =
                 index <=
-                STATUSES.findIndex((status) => status.id === job.status);
+                stages.findIndex((status: { id: Status }) => status.id === job.status);
               return (
                 <div className={done ? "done" : ""} key={item.id}>
                   <span>
@@ -1679,6 +1815,11 @@ function JobEditor({
               : "Trabajo reservado para ti mientras lo editas."}
           </div>
         ) : null}
+        {job?.rework_kind && job.status !== "installed" && <div className="correction-notice">
+          <strong>{reworkLabels[job.rework_kind]} · Corrección {job.revision_no}</strong>
+          <p>{job.review_notes}</p>
+          <small>{job.rework_kind === "trim" ? "Ajusta el felpudo y añade fotos nuevas para cerrarlo." : job.rework_kind === "add" ? "Mide solo la parte que se añade; después córtala, colócala y añade fotos nuevas." : "Vuelve a medir el local, corta el nuevo felpudo y añade fotos nuevas al colocarlo."}</small>
+        </div>}
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -1696,7 +1837,7 @@ function JobEditor({
               placeholder="Nombre de la tienda"
               maxLength={140}
               required
-              disabled={!measurementsEditable}
+              disabled={!detailsEditable}
             />
           </label>
           <label>
@@ -1720,9 +1861,18 @@ function JobEditor({
               ))}
             </select>
           </label>
+          {device && <label>
+            Deshumidificadores que necesita el local <span>*</span>
+            <input type="number" inputMode="numeric" min="1" step="1" required
+              value={values.quantity} disabled={!detailsEditable}
+              onChange={(event) => setValues({ ...values, quantity: event.target.value })}
+            />
+          </label>}
+          {!device && <>
+          {job?.rework_kind === "add" && <p className="measure-caption">Medidas de la parte que se añade</p>}
           <div className="measure-form">
             <label>
-              Ancho <span>*</span>
+              Ancho
               <div className="input-unit">
                 <input
                   value={values.width}
@@ -1731,7 +1881,6 @@ function JobEditor({
                   }
                   placeholder="120"
                   inputMode="decimal"
-                  required
                   disabled={!measurementsEditable}
                 />
                 <span>cm</span>
@@ -1739,7 +1888,7 @@ function JobEditor({
             </label>
             <span className="form-times">×</span>
             <label>
-              Largo <span>*</span>
+              Largo
               <div className="input-unit">
                 <input
                   value={values.length}
@@ -1748,7 +1897,6 @@ function JobEditor({
                   }
                   placeholder="180"
                   inputMode="decimal"
-                  required
                   disabled={!measurementsEditable}
                 />
                 <span>cm</span>
@@ -1757,8 +1905,9 @@ function JobEditor({
           </div>
           <p className="field-help">
             Medidas en centímetros. Ejemplo: 120,5 × 180 cm.
+            {(!job || job.status === "pending_measurement") && " Puedes guardar el local sin medidas y completarlas después."}
             {job &&
-              job.status !== "measured" &&
+              ["cut", "installed", "pending_adjustment"].includes(job.status) &&
               " Las medidas quedan fijadas al marcar Cortado."}
           </p>
           <div className="material-form">
@@ -1796,6 +1945,7 @@ function JobEditor({
               </select>
             </label>
           </div>
+          </>}
           <label>
             Observaciones
             <textarea
@@ -1803,7 +1953,7 @@ function JobEditor({
               onChange={(event) =>
                 setValues({ ...values, notes: event.target.value })
               }
-              placeholder="Solo lo necesario: datos pendientes, sentido de la fibra…"
+              placeholder={device ? "Detalles útiles para colocar los aparatos…" : "Solo lo necesario: datos pendientes, sentido de la fibra…"}
               rows={3}
               maxLength={editableNotesLimit(preparedNotes)}
               disabled={!detailsEditable}
@@ -1817,18 +1967,18 @@ function JobEditor({
             </details>
           )}
         </form>
-        {job && (job.status === "installed" || (job.status === "cut" && canEdit)) && (
+        {job && (job.status === "installed" || (readyToInstall && canEdit)) && (
           <section className="photo-section" ref={photoSectionRef}>
             <h3>
               {job.status === "installed" ? <CheckCheck size={20} /> : <Camera size={20} />}
-              {job.status === "installed" ? "Felpudo colocado" : "Fotos del trabajo colocado"}
-              {job.status === "cut" && <span>*</span>}
+              {job.status === "installed" ? device ? "Deshumidificadores colocados" : "Felpudo colocado" : "Fotos del trabajo colocado"}
+              {readyToInstall && <span>*</span>}
             </h3>
             {job.installed_at ? (
               <p>Colocado el {dateTime(job.installed_at)} · {photoPaths.length} {photoPaths.length === 1 ? "foto guardada" : "fotos guardadas"}.</p>
             ) : (
               <p>
-                Añade al menos una foto cuando el felpudo esté en su sitio. Las fotos
+                Añade al menos una {job.rework_kind ? "foto nueva cuando la corrección esté terminada" : device ? "foto cuando los aparatos estén colocados" : "foto cuando el felpudo esté en su sitio"}. Las fotos
                 adicionales son opcionales y se guardarán al pulsar Marcar colocado.
               </p>
             )}
@@ -1837,7 +1987,7 @@ function JobEditor({
                 {savedPhotos.map(({ path, url }, index) => (
                   <a href={url} target="_blank" rel="noreferrer" key={path}>
                     <img className="saved-photo" src={url}
-                      alt={`Felpudo colocado en ${job.store_name}, foto ${index + 1}`}
+                      alt={`Trabajo colocado en ${job.store_name}, foto ${index + 1}`}
                       onError={() => setPhotoError("No se puede mostrar alguna imagen en este navegador. Pulsa la foto para abrirla.")}
                     />
                     <small>Abrir foto {index + 1}</small>
@@ -1900,10 +2050,35 @@ function JobEditor({
             {photoError}
           </p>
         )}
+        {job && !device && job.status === "installed" && <section className="review-section" aria-label="Revisar colocación">
+          <h3><ShieldCheck size={20} />Revisar colocación</h3>
+          <span className={`review-badge ${job.review_status || "pending"}`}>{reviewLabels[job.review_status || "pending"]}</span>
+          {job.reviewed_at && job.review_status === "approved" && <p>Revisado por {person(job.reviewed_by || "")} · {dateTime(job.reviewed_at)}</p>}
+          {canEdit && <>
+            <button className="secondary approve-review" disabled={busy || !online || job.review_status === "approved"} onClick={() => void review("approve")}><Check size={17} />Está bien</button>
+            <details className="correction-picker">
+              <summary>Hay que corregirlo</summary>
+              <label>Tipo de corrección
+                <select value={reviewAction} disabled={busy} onChange={(event) => setReviewAction(event.target.value as ReworkKind | "")}>
+                  <option value="">Elige una corrección</option>
+                  <option value="trim">Recortar</option>
+                  <option value="add">Añadir una parte</option>
+                  <option value="replace">Reponer entero</option>
+                </select>
+              </label>
+              {reviewAction && <>
+                <p>{reviewAction === "trim" ? "El trabajo vuelve a Por ajustar. Después se cierra con fotos nuevas." : reviewAction === "add" ? "El trabajo vuelve a Por medir. Se miden y cortan las dimensiones de la parte nueva." : "El trabajo vuelve a Por medir para repetir la medición, el corte y la colocación."} Las fotos anteriores se conservarán en el historial.</p>
+                <label>Qué hay que corregir <span>*</span><textarea rows={3} maxLength={3000} value={reviewNotes} disabled={busy} onChange={(event) => setReviewNotes(event.target.value)} placeholder="Describe el problema y dónde está…" /></label>
+                <button className="primary" disabled={busy || !online} onClick={() => void review(reviewAction)}><RefreshCw size={17} />Reabrir para corregir</button>
+              </>}
+            </details>
+          </>}
+        </section>}
+        {job && <JobHistory job={job} demo={demo} person={person} />}
         {job && (
           <p className="record-history">
-            Medido por {person(job.measured_by || "")} ·{" "}
-            {dateTime(job.measured_at)}
+            Registrado por {person(job.created_by)} · {dateTime(job.created_at)}
+            {job.measured_at && !device && <><br />Medido por {person(job.measured_by || "")} · {dateTime(job.measured_at)}</>}
             {job.cut_at && (
               <>
                 <br />
@@ -1962,8 +2137,8 @@ function JobEditor({
               ) : (
                 <>
                   {job?.status === "installed" ? "Guardar fotos" : job
-                    ? STATUSES.find((item) => item.id === job.status)?.action
-                    : "Guardar medición"}
+                    ? stages.find((item: { id: Status }) => item.id === job.status)?.action
+                    : device ? "Guardar local y unidades" : values.width && values.length ? "Guardar medición" : "Guardar para medir después"}
                   {next === "installed" ? (
                     <Check size={18} />
                   ) : (
@@ -1977,6 +2152,54 @@ function JobEditor({
       </div>
     </dialog>
   );
+}
+
+function JobHistory({ job, demo, person }: { job: Job; demo: boolean; person: (id: string) => string }) {
+  const [events, setEvents] = useState<JobEvent[]>([]);
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let live = true;
+    async function load() {
+      try {
+        let history: JobEvent[];
+        if (demo) history = demoEvents(job.id);
+        else {
+          const result = await supabase!.from("job_events").select("*").eq("job_id", job.id).order("created_at", { ascending: false });
+          if (result.error) throw result.error;
+          history = result.data as JobEvent[];
+        }
+        if (live) setEvents(history);
+        const paths = [...new Set(history.flatMap((event) => snapshotPhotoPaths(event.snapshot)))];
+        const signed = await Promise.all(paths.map(async (path) => {
+          if (demo) return [path, path] as const;
+          const result = await supabase!.storage.from("job-photos").createSignedUrl(path, 3600);
+          if (result.error) throw result.error;
+          return [path, result.data.signedUrl] as const;
+        }));
+        if (live) { setEvents(history); setUrls(Object.fromEntries(signed)); setError(""); }
+      } catch (historyError) { if (live) setError(errorMessage(historyError)); }
+    }
+    void load();
+    const timer = window.setInterval(() => void load(), 120000);
+    return () => { live = false; clearInterval(timer); };
+  }, [job.id, demo]);
+  if (!events.length && !error) return null;
+  return <details className="job-history">
+    <summary>Historial de revisiones y fotos anteriores {events.length > 0 && `(${events.length})`}</summary>
+    {error && <p className="form-error">No se pudo cargar el historial: {error}</p>}
+    {events.map((event) => <article className="history-event" key={event.id}>
+      <strong>{event.event_type === "review_approved" ? "Colocación revisada" : `Corrección ${event.revision_no}`}</strong>
+      <small>{person(event.actor_id)} · {dateTime(event.created_at)}</small>
+      {event.notes && <p>{event.notes}</p>}
+      {event.snapshot.width_cm != null && event.snapshot.length_cm != null && <p>Medidas anteriores: {format(event.snapshot.width_cm)} × {format(event.snapshot.length_cm)} cm</p>}
+      {event.snapshot.installed_at && <p>Colocación anterior: {dateTime(event.snapshot.installed_at)}</p>}
+      <div className="photo-grid saved-photo-grid">{snapshotPhotoPaths(event.snapshot).map((path, index) => urls[path] && <a href={urls[path]} key={path} target="_blank" rel="noreferrer"><img src={urls[path]} alt={`Foto anterior de ${job.store_name}, ${index + 1}`} /><small>Abrir foto anterior {index + 1}</small></a>)}</div>
+    </article>)}
+  </details>;
+}
+function snapshotPhotoPaths(snapshot: Partial<Job>) {
+  return jobPhotoPaths({ photo_path: snapshot.photo_path || null, photo_paths: snapshot.photo_paths });
 }
 
 async function shrinkDemoPhoto(file: File): Promise<string> {
