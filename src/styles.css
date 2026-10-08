@@ -183,24 +183,16 @@ button {
   font-size: 21px;
   letter-spacing: -0.75px;
 }
-.brand-icon {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 36px;
-  height: 34px;
-  border: 2px solid var(--green);
-  border-radius: 6px;
-  transform: rotate(-7deg);
-  background: #ede8db;
+.app-logo {
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+  width: 26px;
+  height: auto;
 }
-.brand-icon > span {
-  width: 22px;
-  height: 2px;
-  background: var(--green);
-  border-radius: 2px;
+.brand-icon {
+  width: 36px;
+  height: 41px;
 }
 .brand-light {
   font-weight: 450;
@@ -927,6 +919,15 @@ h1 > span {
   letter-spacing: 1.4px;
   font-weight: 650;
 }
+.footer-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.footer-brand .app-logo {
+  width: 16px;
+  height: 19px;
+}
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -1503,6 +1504,10 @@ h1 > span {
   font-size: 7px;
   font-weight: 400;
 }
+.login-footer > .footer-brand {
+  font-size: inherit;
+  font-weight: 600;
+}
 
 .job-dialog {
   position: fixed;
@@ -1542,8 +1547,15 @@ h1 > span {
   min-width: 0;
 }
 .dialog-header .eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   margin-bottom: 6px;
   font-size: 8px;
+}
+.editor-logo {
+  width: 14px;
+  height: 16px;
 }
 .dialog-header h2 {
   font-size: 24px;
@@ -2075,10 +2087,7 @@ h1 > span {
   }
   .brand-icon {
     width: 31px;
-    height: 30px;
-  }
-  .brand-icon > span {
-    width: 19px;
+    height: 35px;
   }
   .brand small {
     font-size: 7px;
@@ -2615,7 +2624,7 @@ h1 > span {
   }
   .brand-icon {
     width: 28px;
-    height: 29px;
+    height: 32px;
   }
   .brand small {
     font-size: 6px;

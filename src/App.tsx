@@ -124,14 +124,22 @@ function errorMessage(error: unknown): string {
     return "No se ha podido enviar el correo de confirmación. Contacta con quien administra la app para revisar el envío de correos.";
   return raw;
 }
+function AppLogo({ className = "" }: { className?: string }) {
+  return (
+    <img
+      className={`app-logo ${className}`.trim()}
+      src={`${import.meta.env.BASE_URL}logo.svg`}
+      width={241}
+      height={275}
+      alt=""
+      aria-hidden="true"
+    />
+  );
+}
 function Brand() {
   return (
     <div className="brand">
-      <span className="brand-icon">
-        <span />
-        <span />
-        <span />
-      </span>
+      <AppLogo className="brand-icon" />
       <span>
         control<span className="brand-light"> de trabajos</span>
         <small>FELPUDOS · EQUIPO</small>
@@ -950,7 +958,7 @@ export default function App() {
           </>
         )}
         <footer className="footer">
-          <span>CONTROL DE TRABAJOS</span>
+          <span className="footer-brand"><AppLogo />CONTROL DE TRABAJOS</span>
           <span>Medir bien. Cortar una vez.</span>
         </footer>
       </main>
@@ -1086,7 +1094,7 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
         </div>
         <div className="login-card">
           <span className="login-lock">
-            <LockKeyhole size={23} />
+            <AppLogo />
           </span>
           <h2>{mode === "register" ? "Crea tu cuenta." : "Hola, equipo."}</h2>
           <p>
@@ -1226,7 +1234,8 @@ function Login({ onDemo, error }: { onDemo: () => void; error: string }) {
         </div>
       </main>
       <footer className="login-footer">
-        CONTROL DE TRABAJOS <span>MEDIR · CORTAR · COLOCAR</span>
+        <span className="footer-brand"><AppLogo />CONTROL DE TRABAJOS</span>
+        <span>MEDIR · CORTAR · COLOCAR</span>
       </footer>
     </div>
   );
@@ -1545,6 +1554,7 @@ function JobEditor({
       <div className="dialog-header">
         <div>
           <p className="eyebrow">
+            <AppLogo className="editor-logo" />
             {job ? "FICHA DEL TRABAJO" : "EMPEZAMOS POR MEDIR"}
           </p>
           <h2 id="editor-title">{job?.store_name || "Nueva medición"}</h2>
