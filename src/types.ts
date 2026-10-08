@@ -1,4 +1,4 @@
-export type Status = "measured" | "cutting" | "cut" | "installed";
+export type Status = "measured" | "cut" | "installed";
 export interface Profile {
   id: string;
   display_name: string;
@@ -63,26 +63,20 @@ export const STATUSES: {
 }[] = [
   {
     id: "measured",
-    label: "Por cortar",
-    short: "Por cortar",
-    action: "Empezar corte",
-  },
-  {
-    id: "cutting",
-    label: "En corte",
-    short: "En corte",
+    label: "Medido",
+    short: "Medido",
     action: "Marcar cortado",
   },
   {
     id: "cut",
-    label: "Por colocar",
-    short: "Por colocar",
-    action: "Colocar y hacer foto",
+    label: "Cortado",
+    short: "Cortado",
+    action: "Marcar colocado",
   },
   {
     id: "installed",
-    label: "Terminado",
-    short: "Terminados",
+    label: "Colocado",
+    short: "Colocado",
     action: "Ver trabajo",
   },
 ];

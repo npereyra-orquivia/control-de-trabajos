@@ -19,7 +19,6 @@ import {
   LoaderCircle,
   LockKeyhole,
   LogOut,
-  MapPin,
   Plus,
   RefreshCw,
   Ruler,
@@ -42,6 +41,7 @@ import {
 import { supabase } from "./lib/supabase";
 import { resolveLoginEmail } from "./lib/login.mjs";
 import { getMaterialOptions, matchesJob } from "./lib/filters.mjs";
+import { combineJobNotes, editableNotesLimit, prepareJobNotes } from "./lib/notes.mjs";
 import {
   acquireDemo,
   createDemo,
@@ -67,8 +67,7 @@ type EditorState = {
 };
 const icons = {
   measured: Ruler,
-  cutting: Scissors,
-  cut: ClipboardList,
+  cut: Scissors,
   installed: CheckCheck,
 };
 const format = (number: number) =>
@@ -611,7 +610,7 @@ export default function App() {
                     </div>
                     <div className="tile-bottom">
                       <span>
-                        {label === "Terminado" ? "Terminados" : label}
+                        {label}
                       </span>
                       <strong>{count.toString().padStart(2, "0")}</strong>
                     </div>
@@ -871,17 +870,17 @@ export default function App() {
                 {
                   icon: Ruler,
                   title: "01 · Mide en la tienda",
-                  text: "Pulsa Nueva medición. Escribe la tienda, la dirección y el ancho y largo en centímetros. Puedes usar coma decimal.",
+                  text: "Pulsa Nueva medición. Cada trabajo es un felpudo. Escribe el local y sus medidas en centímetros. Puedes usar coma decimal.",
                 },
                 {
                   icon: Scissors,
                   title: "02 · Prepara el corte",
-                  text: "Abre un trabajo por cortar y pulsa Empezar corte. Cuando esté listo, pulsa Marcar cortado.",
+                  text: "Abre un trabajo Medido. Cuando hayas cortado el felpudo, pulsa Marcar cortado.",
                 },
                 {
                   icon: Camera,
                   title: "03 · Coloca y haz la foto",
-                  text: "Abre un trabajo por colocar. Haz una foto o elígela de la galería y pulsa Terminar trabajo.",
+                  text: "Abre un trabajo Cortado. Coloca el felpudo, añade su foto y pulsa Marcar colocado. Sin foto no se puede completar.",
                 },
               ].map((item) => (
                 <div className="guide-card" key={item.title}>
@@ -1246,10 +1245,6 @@ function JobCard({
           <span>Responsable: {job.responsible_name?.trim() || "Sin asignar"}</span>
         </span>
       </div>
-      <p className="job-address">
-        <MapPin size={14} />
-        {job.address || "Sin dirección añadida"}
-      </p>
       <div className="measure-panel">
         <div>
           <small>ANCHO</small>
@@ -1276,11 +1271,8 @@ function JobCard({
             Espesor: {job.thickness_mm == null ? "No sé" : `${job.thickness_mm} mm`}
           </small>
         </span>
-        <span>
-          {job.quantity} {job.quantity === 1 ? "unidad" : "unidades"}
-        </span>
       </div>
-      <div className="card-progress" aria-label={`Paso ${step + 1} de 4`}>
+      <div className="card-progress" aria-label={`Paso ${step + 1} de 3`}>
         {STATUSES.map((item, index) => (
           <span className={index <= step ? "done" : ""} key={item.id} />
         ))}
@@ -1349,16 +1341,15 @@ function JobEditor({
   online: boolean;
 }) {
   const job = state.job;
+  const [preparedNotes] = useState(() => prepareJobNotes(job));
   const [values, setValues] = useState({
     store_name: job?.store_name || "",
-    address: job?.address || "",
     width: String(job?.width_cm || ""),
     length: String(job?.length_cm || ""),
     thickness: String(job?.thickness_mm ?? ""),
-    quantity: job?.quantity || 1,
     material: job ? job.material : "coco",
     responsible_name: job ? job.responsible_name ?? "" : currentName,
-    notes: job?.notes || "",
+    notes: preparedNotes.notes,
   });
   const activeResponsibleNames = [
     ...new Set(
@@ -1376,14 +1367,38 @@ function JobEditor({
   const [savedPhoto, setSavedPhoto] = useState("");
   const [photoError, setPhotoError] = useState("");
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const photoSectionRef = useRef<HTMLElement>(null);
   const deadline = useRef(Date.now() + 180000);
   const renewInFlight = useRef(false);
   const canEdit = !state.readonly && !expired;
   const measurementsEditable = canEdit && (!job || job.status === "measured");
 
   useEffect(() => {
-    dialogRef.current?.showModal();
-    return () => dialogRef.current?.close();
+    const dialog = dialogRef.current!;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const oldOverflow = document.body.style.overflow;
+    const updateViewport = () => {
+      const viewport = window.visualViewport;
+      dialog.style.setProperty("--editor-viewport-height", `${viewport?.height || window.innerHeight}px`);
+      dialog.style.setProperty("--editor-viewport-top", `${viewport?.offsetTop || 0}px`);
+    };
+    updateViewport();
+    dialog.showModal();
+    document.body.style.overflow = "hidden";
+    bodyRef.current?.scrollTo(0, 0);
+    dialog.querySelector<HTMLButtonElement>(".dialog-header button")?.focus({ preventScroll: true });
+    window.visualViewport?.addEventListener("resize", updateViewport);
+    window.visualViewport?.addEventListener("scroll", updateViewport);
+    window.addEventListener("resize", updateViewport);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", updateViewport);
+      window.visualViewport?.removeEventListener("scroll", updateViewport);
+      window.removeEventListener("resize", updateViewport);
+      document.body.style.overflow = oldOverflow;
+      dialog.close();
+      previousFocus?.focus({ preventScroll: true });
+    };
   }, []);
   useEffect(() => {
     if (!job || !state.token) return;
@@ -1467,19 +1482,22 @@ function JobEditor({
         throw new Error(
           "Necesitas conexión para guardar. Tus datos siguen aquí.",
         );
-      if (status === "installed" && !photo)
-        throw new Error("Añade la foto del felpudo colocado para terminar.");
+      if (status === "installed" && !photo) {
+        photoSectionRef.current?.scrollIntoView({ block: "nearest" });
+        document.getElementById("job-photo")?.focus({ preventScroll: true });
+        throw new Error("Te falta hacer o añadir la foto del felpudo colocado. El trabajo sigue Cortado.");
+      }
       await onSave(
         {
           store_name: values.store_name,
-          address: values.address,
+          address: job?.address || "",
           width_cm: parseMeasure(values.width),
           length_cm: parseMeasure(values.length),
           thickness_mm: values.thickness === "" ? null : Number(values.thickness),
-          quantity: Number(values.quantity),
+          quantity: 1,
           material: values.material,
           responsible_name: values.responsible_name,
-          notes: values.notes,
+          notes: combineJobNotes(values.notes, preparedNotes),
         },
         status,
         photo,
@@ -1510,6 +1528,7 @@ function JobEditor({
         </div>
         <button
           className="icon-button"
+          autoFocus
           onClick={() => void onClose()}
           disabled={busy}
           aria-label="Cerrar trabajo"
@@ -1517,7 +1536,7 @@ function JobEditor({
           <X size={23} />
         </button>
       </div>
-      <div className="dialog-body">
+      <div className="dialog-body" ref={bodyRef}>
         {job && (
           <div className="editor-steps">
             {STATUSES.map((item, index) => {
@@ -1599,18 +1618,6 @@ function JobEditor({
               ))}
             </select>
           </label>
-          <label>
-            Dirección
-            <input
-              value={values.address}
-              onChange={(event) =>
-                setValues({ ...values, address: event.target.value })
-              }
-              placeholder="Calle, número y población"
-              maxLength={300}
-              disabled={!canEdit}
-            />
-          </label>
           <div className="measure-form">
             <label>
               Ancho <span>*</span>
@@ -1650,7 +1657,7 @@ function JobEditor({
             Medidas en centímetros. Ejemplo: 120,5 × 180 cm.
             {job &&
               job.status !== "measured" &&
-              " Las medidas quedan fijadas al empezar el corte."}
+              " Las medidas quedan fijadas al marcar Cortado."}
           </p>
           <div className="material-form">
             <label>
@@ -1687,46 +1694,36 @@ function JobEditor({
               </select>
             </label>
           </div>
-          <div className="quantity-form">
-            <label>
-              Unidades
-              <input
-                type="number"
-                min="1"
-                max="100"
-                step="1"
-                value={values.quantity}
-                onChange={(event) =>
-                  setValues({ ...values, quantity: Number(event.target.value) })
-                }
-                disabled={!measurementsEditable}
-                required
-              />
-            </label>
-          </div>
           <label>
-            Notas
+            Observaciones
             <textarea
               value={values.notes}
               onChange={(event) =>
                 setValues({ ...values, notes: event.target.value })
               }
-              placeholder="Detalles del acceso, sentido de la fibra…"
+              placeholder="Solo lo necesario: datos pendientes, sentido de la fibra…"
               rows={3}
-              maxLength={3000}
+              maxLength={editableNotesLimit(preparedNotes)}
               disabled={!canEdit}
             />
           </label>
+          {preparedNotes.archive && (
+            <details className="import-history">
+              <summary>Ver información original del listado y el chat</summary>
+              <p>Referencia de la importación. Las medidas, el material, el espesor y el responsable de esta ficha muestran los datos actuales.</p>
+              <pre>{preparedNotes.archive}</pre>
+            </details>
+          )}
         </form>
         {job?.status === "cut" && canEdit && (
-          <section className="photo-section">
+          <section className="photo-section" ref={photoSectionRef}>
             <h3>
               <Camera size={20} />
               Foto del trabajo colocado <span>*</span>
             </h3>
             <p>
               Hazla cuando el felpudo esté en su sitio. Se guardará al pulsar
-              Terminar trabajo.
+              Marcar colocado.
             </p>
             <label
               className={`photo-picker ${photo ? "has-photo" : ""}`}
@@ -1781,7 +1778,7 @@ function JobEditor({
           <section className="photo-section">
             <h3>
               <CheckCheck size={20} />
-              Trabajo terminado
+              Felpudo colocado
             </h3>
             {job.installed_at && (
               <p>Colocado el {dateTime(job.installed_at)}</p>
@@ -1814,13 +1811,6 @@ function JobEditor({
           <p className="record-history">
             Medido por {person(job.measured_by || "")} ·{" "}
             {dateTime(job.measured_at)}
-            {job.cutting_at && (
-              <>
-                <br />
-                Corte iniciado por {person(job.cutting_by || "")} ·{" "}
-                {dateTime(job.cutting_at)}
-              </>
-            )}
             {job.cut_at && (
               <>
                 <br />
@@ -1838,12 +1828,10 @@ function JobEditor({
             Último cambio: {person(job.updated_by)} · {dateTime(job.updated_at)}
           </p>
         )}
-        {error && (
-          <div className="form-error" role="alert">
-            {error}
-          </div>
-        )}
       </div>
+      {error && (
+        <div className="dialog-error form-error" role="alert">{error}</div>
+      )}
       <div className="dialog-footer">
         {!canEdit ? (
           <button className="secondary" onClick={() => void onClose()}>
@@ -1870,7 +1858,7 @@ function JobEditor({
             )}
             <button
               className="primary"
-              disabled={busy || !online || (next === "installed" && !photo)}
+              disabled={busy || !online}
               onClick={() => void save(next || undefined)}
             >
               {busy ? (
@@ -1881,9 +1869,7 @@ function JobEditor({
               ) : (
                 <>
                   {job
-                    ? next === "installed"
-                      ? "Terminar trabajo"
-                      : STATUSES.find((item) => item.id === job.status)?.action
+                    ? STATUSES.find((item) => item.id === job.status)?.action
                     : "Guardar medición"}
                   {next === "installed" ? (
                     <Check size={18} />

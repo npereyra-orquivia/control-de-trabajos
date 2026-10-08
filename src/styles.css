@@ -359,7 +359,7 @@ h1 > span {
 }
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 38px;
 }
@@ -686,6 +686,7 @@ h1 > span {
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 7px 10px;
+  margin-bottom: 20px;
 }
 .job-title h3 {
   flex: 1 1 140px;
@@ -816,7 +817,7 @@ h1 > span {
 }
 .card-progress {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 5px;
   margin-top: auto;
   margin-bottom: 12px;
@@ -1504,9 +1505,13 @@ h1 > span {
 }
 
 .job-dialog {
+  position: fixed;
+  inset: calc(var(--editor-viewport-top, 0px) + 20px) 0 auto;
+  margin: 0 auto;
   width: min(640px, calc(100vw - 40px));
+  height: min(820px, calc(var(--editor-viewport-height, 100dvh) - 40px));
   max-width: none;
-  max-height: calc(100dvh - 48px);
+  max-height: calc(var(--editor-viewport-height, 100dvh) - 40px);
   padding: 0;
   border: 1px solid #e5e9dc;
   border-radius: 19px;
@@ -1548,7 +1553,7 @@ h1 > span {
   overflow-wrap: anywhere;
 }
 .dialog-body {
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1558,7 +1563,7 @@ h1 > span {
 }
 .editor-steps {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 9px;
   margin-bottom: 24px;
 }
@@ -1721,8 +1726,35 @@ h1 > span {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
-.quantity-form {
-  max-width: 110px;
+.import-history {
+  border: 1px solid #e2e7d8;
+  border-radius: 9px;
+  padding: 12px 13px;
+  color: #61745a;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.import-history summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.import-history p {
+  margin-top: 12px;
+}
+.import-history pre {
+  margin: 12px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: #737f69;
+}
+.dialog-error {
+  flex-shrink: 0;
+  margin: 0;
+  border-radius: 0;
+  padding: 11px 27px;
+  max-height: 100px;
+  overflow-y: auto;
 }
 .photo-section {
   margin-top: 27px;
@@ -1975,7 +2007,7 @@ h1 > span {
     margin-left: -20px;
   }
   .status-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 13px;
   }
   .status-tile {
@@ -2473,15 +2505,16 @@ h1 > span {
   }
   .job-dialog {
     position: fixed;
-    inset: auto 0 0;
+    inset: var(--editor-viewport-top, 0px) 0 auto;
     margin: 0;
     width: 100%;
-    max-height: calc(100dvh - 12px);
+    height: var(--editor-viewport-height, 100dvh);
+    max-height: var(--editor-viewport-height, 100dvh);
     border: 0;
-    border-radius: 20px 20px 0 0;
+    border-radius: 0;
   }
   .dialog-header {
-    padding: 20px 20px 16px;
+    padding: calc(16px + env(safe-area-inset-top)) 20px 14px;
     gap: 9px;
   }
   .dialog-header h2 {
@@ -2495,6 +2528,10 @@ h1 > span {
   }
   .dialog-body {
     padding: 20px 20px 23px;
+  }
+  .dialog-error {
+    padding: 10px 20px;
+    font-size: 12px;
   }
   .editor-steps {
     gap: 5px;
