@@ -10,6 +10,7 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
   const schema = await readFile(new URL('../supabase/schema.sql', import.meta.url), 'utf8')
   const thicknessMigration = await readFile(new URL('../supabase/migrations/20261007_add_thickness.sql', import.meta.url), 'utf8')
   const responsibleMigration = await readFile(new URL('../supabase/migrations/20261008_add_responsible.sql', import.meta.url), 'utf8')
+  const workflowMigration = await readFile(new URL('../supabase/migrations/20261008_three_stages_one_mat.sql', import.meta.url), 'utf8')
   const users = Array.from({ length: 6 }, (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`)
   let checks = 0
   const expect = (condition, label) => { assert.ok(condition, label); checks += 1 }
@@ -78,6 +79,8 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
     await db.exec(thicknessMigration)
     await db.exec(responsibleMigration)
     await db.exec(responsibleMigration)
+    await db.exec(workflowMigration)
+    await db.exec(workflowMigration)
     await actor(users[0])
     const job = await jobRow()
     expect(job.thickness_mm === null && job.width_cm === '80.50', 'incremental migration preserves existing measurement and gives unknown thickness')
@@ -87,6 +90,7 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
     expect(job.measured_by === users[0] && job.cutting_by === null && job.cut_by === null && job.installed_by === null, 'creation stamps only measuring author')
     await reject('zero measurement rejected', 'insert into public.jobs(store_name,width_cm,length_cm) values($1,0,100)', ['Invalid'], '23514')
     await reject('negative measurement rejected', 'insert into public.jobs(store_name,width_cm,length_cm) values($1,-1,100)', ['Invalid'], '23514')
+    await reject('multiple felpudos must be separate tasks', 'insert into public.jobs(store_name,width_cm,length_cm,quantity) values($1,80,100,2)', ['Invalid'], '23514')
     await reject('unsupported thickness rejected on insert', 'insert into public.jobs(store_name,width_cm,length_cm,thickness_mm) values($1,80,100,18)', ['Invalid'], '23514')
     await reject('responsible name over 100 characters rejected on insert', 'insert into public.jobs(store_name,width_cm,length_cm,responsible_name) values($1,80,100,$2)', ['Invalid', 'x'.repeat(101)], '23514')
     await reject('null responsible name rejected on insert', 'insert into public.jobs(store_name,width_cm,length_cm,responsible_name) values($1,80,100,null)', ['Invalid'], '23502')
@@ -135,21 +139,20 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
     current = await jobRow()
     expect(current.thickness_mm === null, 'explicit null patch restores No sé')
 
-    await reject('cannot skip measured to cut', updateSql, [jobId, tokenA, current.version, '{"status":"cut"}'], '23514')
+    await reject('removed cutting state is rejected', updateSql, [jobId, tokenA, current.version, '{"status":"cutting"}'], '23514')
     await reject('cannot skip measured to installed', updateSql, [jobId, tokenA, current.version, '{"status":"installed"}'], '23514')
     await db.query('select public.release_job_lock($1,$2)', [jobId, tokenA])
     await actor(users[2])
     expect(await scalar('select public.acquire_job_lock($1,$2)', [jobId, tokenC]) === true, 'new measuring worker acquires')
-    await update(jobId, tokenC, current.version, { status: 'cutting', width_cm: 81.5, length_cm: 123, quantity: 2, material: 'Coco gris', thickness_mm: 20 })
+    await update(jobId, tokenC, current.version, { width_cm: 81.5, length_cm: 123, quantity: 1, material: 'Coco gris', thickness_mm: 20 })
     current = await jobRow()
-    expect(current.status === 'cutting' && Number(current.width_cm) === 81.5 && Number(current.length_cm) === 123 && current.quantity === 2 && current.material === 'Coco gris', 'atomic dimension edits and start cutting succeed')
-    expect(current.measured_by === users[2] && current.cutting_by === users[2], 'edited measurement and starting cut record actual worker')
-    expect(current.thickness_mm === 20, 'thickness edit and start cutting are atomic')
+    expect(current.status === 'measured' && Number(current.width_cm) === 81.5 && Number(current.length_cm) === 123 && current.quantity === 1 && current.material === 'Coco gris', 'dimension corrections keep one measured felpudo')
+    expect(current.measured_by === users[2] && current.cutting_by === null, 'edited measurement records actual worker without removed intermediate stage')
+    expect(current.thickness_mm === 20, 'thickness correction succeeds while measured')
     await update(jobId, tokenC, current.version, { responsible_name: '  Worker Beta  ' })
     current = await jobRow()
-    expect(current.responsible_name === 'Worker Beta' && current.status === 'cutting' && current.measured_by === users[2], 'assignment can change while cutting without changing measurement author')
-    await reject('cutting thickness immutable', updateSql, [jobId, tokenC, current.version, '{"thickness_mm":17}'], '23514')
-    await reject('cannot skip cutting to installed', updateSql, [jobId, tokenC, current.version, '{"status":"installed"}'], '23514')
+    expect(current.responsible_name === 'Worker Beta' && current.status === 'measured' && current.measured_by === users[2], 'assignment can change without changing measurement author')
+    await reject('RPC cannot combine two felpudos', updateSql, [jobId, tokenC, current.version, '{"quantity":2}'], '23514')
     await reject('cannot forge stage author', updateSql, [jobId, tokenC, current.version, JSON.stringify({ cut_by: users[0] })], '22023')
     await db.query('select public.release_job_lock($1,$2)', [jobId, tokenC])
     await actor(users[1])
@@ -157,7 +160,8 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
     await update(jobId, tokenB, current.version, { status: 'cut' })
     current = await jobRow()
     expect(current.status === 'cut' && current.cut_at !== null, 'mark cut records date')
-    expect(current.cut_by === users[1] && current.measured_by === users[2] && current.cutting_by === users[2], 'cut author remains separate from measuring and starting worker')
+    expect(current.cut_by === users[1] && current.measured_by === users[2] && current.cutting_by === null, 'direct measured to cut records cutting worker separately from measuring worker')
+    await reject('removed cutting state cannot return after cutting', updateSql, [jobId, tokenB, current.version, '{"status":"cutting"}'], '23514')
     await update(jobId, tokenB, current.version, { responsible_name: '   ' })
     current = await jobRow()
     expect(current.responsible_name === '' && current.status === 'cut' && current.cut_by === users[1], 'assignment can be cleared before installation without changing cut author')
@@ -167,6 +171,7 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
     await reject('cut measurements immutable', updateSql, [jobId, tokenA, current.version, '{"width_cm":90}'], '23514')
     await reject('cut thickness immutable', updateSql, [jobId, tokenA, current.version, '{"thickness_mm":null}'], '23514')
     await reject('install requires photo', updateSql, [jobId, tokenA, current.version, '{"status":"installed"}'], '23514')
+    await reject('install rejects nonexistent photo', updateSql, [jobId, tokenA, current.version, JSON.stringify({ status: 'installed', photo_path: `${jobId}/30000000-0000-4000-8000-000000000002.jpg` })], '23514')
     const photoPath = `${jobId}/30000000-0000-4000-8000-000000000001.jpg`
     await db.query('insert into storage.objects(bucket_id,name,owner_id) values($1,$2,$3)', ['job-photos', photoPath, users[0]])
     await update(jobId, tokenA, current.version, { status: 'installed', photo_path: photoPath })
@@ -193,13 +198,59 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
     const resetId = '10000000-0000-4000-8000-000000000002'
     await db.query("insert into public.jobs(id,store_name,width_cm,length_cm) values($1,'Remeasuring',70,100)", [resetId])
     await db.query('select public.acquire_job_lock($1,$2)', [resetId, tokenA])
-    await update(resetId, tokenA, 1, { status: 'cutting' })
-    await update(resetId, tokenA, 2, { status: 'cut' })
-    await update(resetId, tokenA, 3, { status: 'measured', width_cm: 75, thickness_mm: 17 })
+    await update(resetId, tokenA, 1, { status: 'cut' })
+    await update(resetId, tokenA, 2, { status: 'measured', width_cm: 75, thickness_mm: 17 })
     const resetJob = await jobRow(resetId)
     expect(resetJob.status === 'measured' && Number(resetJob.width_cm) === 75 && resetJob.measured_by === users[0], 'cut job can be remeasured with revised dimensions')
     expect(resetJob.thickness_mm === 17, 'remeasuring permits corrected thickness')
     expect(resetJob.cutting_at === null && resetJob.cut_at === null && resetJob.installed_at === null && resetJob.cutting_by === null && resetJob.cut_by === null && resetJob.installed_by === null, 'remeasuring clears downstream dates and authors')
+
+    const atomicId = '10000000-0000-4000-8000-000000000003'
+    await db.query("insert into public.jobs(id,store_name,width_cm,length_cm) values($1,'Atomic cut',70,100)", [atomicId])
+    await db.query('select public.acquire_job_lock($1,$2)', [atomicId, tokenA])
+    await update(atomicId, tokenA, 1, { status: 'cut', width_cm: 76, thickness_mm: 20 })
+    const atomicJob = await jobRow(atomicId)
+    expect(atomicJob.status === 'cut' && Number(atomicJob.width_cm) === 76 && atomicJob.thickness_mm === 20, 'corrected measurement and direct mark cut are atomic')
+    expect(atomicJob.measured_by === users[0] && atomicJob.cut_by === users[0] && atomicJob.cutting_at === null, 'atomic mark cut records both real authors without intermediate stage')
+
+    // Simulate older live data. Migration must separate real quantities and
+    // collapse the removed stage, rather than silently dropping a felpudo.
+    await db.exec(`reset role;
+      alter table public.jobs drop constraint jobs_quantity_check;
+      alter table public.jobs add constraint jobs_quantity_check check (quantity between 1 and 100);
+      alter table public.jobs drop constraint jobs_status_check;
+      alter table public.jobs add constraint jobs_status_check check (status in ('measured','cutting','cut','installed'));
+      alter table public.jobs disable trigger jobs_prepare;
+    `)
+    const legacyCuttingId = '10000000-0000-4000-8000-000000000004'
+    const legacyCutId = '10000000-0000-4000-8000-000000000005'
+    const baselineCount = await scalar('select count(*)::int from public.jobs')
+    await db.query(`insert into public.jobs(id,store_name,width_cm,length_cm,quantity,thickness_mm,material,responsible_name,notes,status,measured_by,cutting_at,cutting_by)
+      values($1,'Legacy cutting',50.25,100.5,2,20,'coco','Nicole','Notas originales','cutting',$2,now(),$3)`, [legacyCuttingId, users[2], users[1]])
+    await db.query(`insert into public.jobs(id,store_name,width_cm,length_cm,quantity,thickness_mm,material,responsible_name,notes,status,measured_by,cut_at,cut_by)
+      values($1,'Legacy cut',60.25,110.5,3,17,'coco','Andrés','No eliminar','cut',$2,now(),$3)`, [legacyCutId, users[2], users[1]])
+    await db.query('update public.jobs set quantity=2 where id=$1', [jobId])
+    let ambiguousPhotoFailure
+    try { await db.exec(workflowMigration) } catch (error) { ambiguousPhotoFailure = error }
+    finally { await db.exec('rollback') }
+    expect(ambiguousPhotoFailure?.code === '23514', 'migration refuses to assign one final photo to separate installed felpudos')
+    expect(await scalar('select quantity from public.jobs where id=$1', [legacyCutId]) === 3, 'rejected migration rolls back instead of partially splitting data')
+    await db.query('update public.jobs set quantity=1 where id=$1', [jobId])
+    await db.exec(workflowMigration)
+    await db.exec(workflowMigration)
+    expect(await scalar('select count(*)::int from public.jobs') === baselineCount + 5, 'quantities 2 and 3 produce exactly five separate tasks after repeated migration')
+    const migratedCutting = await query("select * from public.jobs where store_name like 'Legacy cutting%' order by store_name")
+    expect(migratedCutting.length === 2 && migratedCutting.every(row => row.quantity === 1 && row.status === 'measured' && row.cutting_at === null && row.cutting_by === null), 'two previously cutting felpudos return to measured individually')
+    expect(migratedCutting.every(row => Number(row.width_cm) === 50.25 && Number(row.length_cm) === 100.5 && row.thickness_mm === 20 && row.material === 'coco' && row.responsible_name === 'Nicole' && row.notes === 'Notas originales' && row.measured_by === users[2]), 'separation preserves measurements, material, responsible, notes and real measuring author')
+    const migratedCut = await query("select * from public.jobs where store_name like 'Legacy cut · felpudo %' order by store_name")
+    expect(migratedCut.length === 3 && migratedCut.every(row => row.quantity === 1 && row.status === 'cut' && row.cut_by === users[1] && row.cut_at !== null && row.notes === 'No eliminar'), 'already cut felpudos remain cut after individual separation')
+    expect(await scalar('select photo_path from public.jobs where id=$1', [jobId]) === photoPath, 'migration keeps installed final photo')
+    await actor(users[0])
+    await reject('new migration keeps direct updates forbidden', "update public.jobs set status='installed' where id=$1", [legacyCutId], '42501')
+    await reject('new migration rejects removed stage on insert', "insert into public.jobs(store_name,width_cm,length_cm,status) values('Old client',80,100,'cutting')", [], '23514')
+    await db.exec('reset role')
+    await db.exec(schema)
+    expect(await scalar('select count(*)::int from public.jobs') === baselineCount + 5, 'full schema rerun does not duplicate separated tasks')
 
     await db.exec('reset role')
     await db.query('update public.profiles set active=false where id=$1', [users[1]])

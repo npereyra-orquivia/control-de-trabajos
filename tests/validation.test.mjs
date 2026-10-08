@@ -6,11 +6,11 @@ test('medidas españolas admiten coma decimal sin redondear silenciosamente', ()
   assert.equal(parseMeasure('95.25'), 95.25)
   for (const value of ['0', '-1', 'NaN', '2,555', '1e3', '120cm', '', '10001']) assert.throws(() => parseMeasure(value))
 })
-test('trabajo exige tienda, dimensiones válidas y cantidad entera', () => {
+test('cada trabajo exige tienda, dimensiones válidas y representa un felpudo', () => {
   const job = { store_name: ' Centro ', address: '', material: '', notes: '', width_cm: 95, length_cm: 150, quantity: 1 }
   assert.equal(validateInput(job).store_name, 'Centro')
   assert.throws(() => validateInput({ ...job, store_name: ' ' }))
-  assert.throws(() => validateInput({ ...job, quantity: 1.5 }))
+  for (const quantity of [0, 2, 100, 1.5, '1', undefined]) assert.throws(() => validateInput({ ...job, quantity }), /un solo felpudo/)
   assert.throws(() => validateInput({ ...job, width_cm: Infinity }))
 })
 test('grosor conserva 17 mm, 20 mm o la opción No sé', () => {
@@ -42,7 +42,7 @@ test('foto final acepta imágenes y rechaza vacías, formatos ajenos y más de10
   for (const file of [{type:'image/jpeg',size:0},{type:'text/html',size:100},{type:'image/jpeg',size:10485761}]) assert.throws(() => validatePhoto(file))
 })
 test('avance de trabajo conserva orden y no vuelve a abrir terminados', () => {
-  assert.equal(nextStatus('measured'), 'cutting'); assert.equal(nextStatus('cutting'), 'cut')
+  assert.equal(nextStatus('measured'), 'cut'); assert.equal(nextStatus('cutting'), null)
   assert.equal(nextStatus('cut'), 'installed'); assert.equal(nextStatus('installed'), null)
 })
 test('responsable conserva el nombre, recorta espacios y admite fichas antiguas sin asignar', () => {
