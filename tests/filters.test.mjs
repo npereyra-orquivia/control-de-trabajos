@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { materialKey, getMaterialOptions, responsibleKey, getResponsibleOptions, matchesJob } from "../src/lib/filters.mjs";
+import { materialKey, getMaterialOptions, responsibleKey, getResponsibleOptions, matchesJob, sortJobsForWorkspace } from "../src/lib/filters.mjs";
 
 const baseOptions = [
   { value: "coco", label: "Coco" },
@@ -137,4 +137,21 @@ test("responsible selection combines with status, material, thickness, and local
   ]) assert.equal(matchesJob(job, { ...filters, ...changed }), false);
   assert.equal(matchesJob(job, { ...all, responsible: "all" }), true);
   assert.equal(matchesJob(job, all), true);
+});
+
+test("completed jobs stay visible at the end without changing order within either group", () => {
+  const ordered = [
+    { ...jobs[0], store_name: "Colocado reciente", status: "installed" },
+    { ...jobs[0], store_name: "Por cortar", status: "measured" },
+    { ...jobs[0], store_name: "Colocado anterior", status: "installed" },
+    { ...jobs[0], store_name: "Por colocar", status: "cut" },
+  ];
+  const original = ordered.slice();
+  assert.deepEqual(sortJobsForWorkspace(ordered).map(job => job.store_name), [
+    "Por cortar", "Por colocar", "Colocado reciente", "Colocado anterior",
+  ]);
+  assert.deepEqual(ordered, original);
+  assert.deepEqual(sortJobsForWorkspace(ordered.filter(job => matchesJob(job, { ...all, status: "installed" }))).map(job => job.store_name), [
+    "Colocado reciente", "Colocado anterior",
+  ]);
 });

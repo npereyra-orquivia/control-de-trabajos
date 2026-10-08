@@ -11,6 +11,7 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
   const thicknessMigration = await readFile(new URL('../supabase/migrations/20261007_add_thickness.sql', import.meta.url), 'utf8')
   const responsibleMigration = await readFile(new URL('../supabase/migrations/20261008_add_responsible.sql', import.meta.url), 'utf8')
   const workflowMigration = await readFile(new URL('../supabase/migrations/20261008_three_stages_one_mat.sql', import.meta.url), 'utf8')
+  const photosMigration = await readFile(new URL('../supabase/migrations/20261008_multiple_photos.sql', import.meta.url), 'utf8')
   const users = Array.from({ length: 6 }, (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`)
   let checks = 0
   const expect = (condition, label) => { assert.ok(condition, label); checks += 1 }
@@ -60,12 +61,13 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
     for (let index = 0; index < 5; index++) await db.query('insert into auth.users(id,email) values($1,$2)', [users[index], `worker${index + 1}@example.com`])
 
     // Simulate the previous schema, then exercise the migration with real rows.
-    await db.exec('alter table public.jobs drop column measured_by, drop column cutting_by, drop column cut_by, drop column installed_by, drop column thickness_mm, drop column responsible_name')
+    await db.exec('alter table public.jobs drop column measured_by, drop column cutting_by, drop column cut_by, drop column installed_by, drop column thickness_mm, drop column responsible_name, drop column photo_paths')
     await db.exec(schema)
     checks += 1
     expect(await scalar("select count(*)::int from information_schema.columns where table_schema='public' and table_name='jobs' and column_name in ('measured_by','cutting_by','cut_by','installed_by')") === 4, 'older schema receives all four author columns')
     expect(await scalar("select count(*)::int from information_schema.columns where table_schema='public' and table_name='jobs' and column_name='thickness_mm' and is_nullable='YES'") === 1, 'older schema receives nullable thickness')
     expect(await scalar("select count(*)::int from information_schema.columns where table_schema='public' and table_name='jobs' and column_name='responsible_name' and is_nullable='NO'") === 1, 'older schema receives nonnullable responsible name')
+    expect(await scalar("select count(*)::int from information_schema.columns where table_schema='public' and table_name='jobs' and column_name='photo_paths' and is_nullable='NO'") === 1, 'older schema receives nonnullable photo array')
     expect(await scalar('select count(*)::int from public.profiles') === 5, 'schema rerun does not duplicate profiles')
     expect(await scalar('select count(*)::int from public.profiles where active and member_slot is not null') === 5, 'five active unique slots')
     expect(await scalar('select role from public.profiles where id=$1', [users[0]]) === 'admin', 'first member is admin')
@@ -81,6 +83,8 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
     await db.exec(responsibleMigration)
     await db.exec(workflowMigration)
     await db.exec(workflowMigration)
+    await db.exec(photosMigration)
+    await db.exec(photosMigration)
     await actor(users[0])
     const job = await jobRow()
     expect(job.thickness_mm === null && job.width_cm === '80.50', 'incremental migration preserves existing measurement and gives unknown thickness')
@@ -177,9 +181,79 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
     await update(jobId, tokenA, current.version, { status: 'installed', photo_path: photoPath })
     current = await jobRow()
     expect(current.status === 'installed' && current.photo_path === photoPath && current.installed_at !== null, 'uploaded proof completes job')
+    expect(current.photo_paths.length === 1 && current.photo_paths[0] === photoPath, 'legacy single-photo RPC also creates photo array')
     expect(current.installed_by === users[0] && current.cut_by === users[1] && current.measured_by === users[2], 'installation keeps all distinct authors')
     await db.query('delete from storage.objects where name=$1', [photoPath])
     expect(await scalar('select count(*)::int from storage.objects where name=$1', [photoPath]) === 1, 'referenced photo deletion blocked')
+
+    // A live installed legacy row must survive backfill without changing its
+    // dates, authors, optimistic version or editing lease.
+    const legacyInstalled = await jobRow()
+    const legacyLease = await query('select job_id,user_id,expires_at from public.job_locks where job_id=$1', [jobId])
+    await db.exec('reset role; alter table public.jobs drop column photo_paths')
+    await db.exec(photosMigration)
+    await db.exec(photosMigration)
+    await actor(users[0])
+    assert.deepEqual(await jobRow(), legacyInstalled, 'repeated migration backfills old installed photo without changing any existing job data')
+    checks += 1
+    assert.deepEqual(await query('select job_id,user_id,expires_at from public.job_locks where job_id=$1', [jobId]), legacyLease, 'photo migration preserves active editing lease')
+    checks += 1
+
+    const extraPhoto = `${jobId}/30000000-0000-4000-8000-000000000003.png`
+    const thirdPhoto = `${jobId}/30000000-0000-4000-8000-000000000004.webp`
+    const replacementPhoto = `${jobId}/30000000-0000-4000-8000-000000000005.jpg`
+    const missingPhoto = `${jobId}/30000000-0000-4000-8000-000000000006.jpg`
+    for (const path of [extraPhoto, thirdPhoto, replacementPhoto]) {
+      await db.query('insert into storage.objects(bucket_id,name,owner_id) values($1,$2,$3)', ['job-photos', path, users[0]])
+    }
+    const photoPatchReject = (label, photo_paths, code = '23514') => reject(label, updateSql, [jobId, tokenA, current.version, JSON.stringify({ photo_paths })], code)
+    await photoPatchReject('installed job cannot remove every photo', [])
+    await photoPatchReject('photo array cannot be null', null, '22023')
+    await photoPatchReject('photo array cannot be an object', { path: photoPath }, '22023')
+    await photoPatchReject('photo array elements must be strings', [photoPath, 42], '22023')
+    await photoPatchReject('photo array cannot contain null elements', [photoPath, null], '22023')
+    await photoPatchReject('photo array cannot contain nested arrays', [photoPath, [extraPhoto]], '22023')
+    await photoPatchReject('duplicate attached photos rejected', [photoPath, photoPath])
+    await photoPatchReject('every attached photo must exist, including second photo', [photoPath, missingPhoto])
+    await photoPatchReject('second photo cannot point at another job', [photoPath, extraPhoto.replace(jobId, '10000000-0000-4000-8000-000000000099')])
+    await photoPatchReject('second photo cannot have invalid extension', [photoPath, extraPhoto.replace('.png', '.gif')])
+    await photoPatchReject('blank photo path rejected', [photoPath, ''])
+    await reject('legacy and array fields must agree', updateSql, [jobId, tokenA, current.version, JSON.stringify({ photo_paths: [photoPath, extraPhoto], photo_path: thirdPhoto })], '22023')
+    await reject('multiple photos still require correct lease', updateSql, [jobId, tokenB, current.version, JSON.stringify({ photo_paths: [photoPath, extraPhoto] })], '55P03')
+    await reject('multiple photos still require current version', updateSql, [jobId, tokenA, current.version - 1, JSON.stringify({ photo_paths: [photoPath, extraPhoto] })], '40001')
+    assert.deepEqual(await jobRow(), legacyInstalled, 'failed photo updates leave all existing data unchanged')
+    checks += 1
+
+    await update(jobId, tokenA, current.version, { photo_paths: [photoPath, extraPhoto, thirdPhoto] })
+    current = await jobRow()
+    assert.deepEqual(current.photo_paths, [photoPath, extraPhoto, thirdPhoto], 'all uploaded photos are retained in order')
+    checks += 1
+    expect(current.photo_path === photoPath && current.status === 'installed' && Number(current.installed_at) === Number(legacyInstalled.installed_at) && current.installed_by === legacyInstalled.installed_by, 'adding more photos preserves primary photo and original completion audit')
+    for (const path of [extraPhoto, thirdPhoto]) {
+      await db.query('delete from storage.objects where name=$1', [path])
+      expect(await scalar('select count(*)::int from storage.objects where name=$1', [path]) === 1, 'additional attached photo deletion blocked')
+    }
+    const multiInstalled = await jobRow()
+    await db.exec('reset role')
+    await db.exec(photosMigration)
+    await db.exec(photosMigration)
+    await db.exec(schema)
+    await actor(users[0])
+    assert.deepEqual(await jobRow(), multiInstalled, 'full schema and repeated migration preserve multiple photos, version and completion audit')
+    checks += 1
+    await update(jobId, tokenA, current.version, { notes: 'Keep every completed photo' })
+    current = await jobRow()
+    assert.deepEqual(current.photo_paths, [photoPath, extraPhoto, thirdPhoto], 'ordinary update preserves all photos when omitted')
+    checks += 1
+    await update(jobId, tokenA, current.version, { photo_path: replacementPhoto })
+    current = await jobRow()
+    assert.deepEqual(current.photo_paths, [replacementPhoto, extraPhoto, thirdPhoto], 'old client replacing primary photo preserves additional photos')
+    checks += 1
+    await update(jobId, tokenA, current.version, { photo_path: photoPath })
+    current = await jobRow()
+    expect(current.photo_paths.length === 3 && current.photo_path === photoPath, 'legacy primary can be restored without losing additional photos')
+    await db.query('delete from storage.objects where name=$1', [replacementPhoto])
+    expect(await scalar('select count(*)::int from storage.objects where name=$1', [replacementPhoto]) === 0, 'unreferenced uploaded photo can still be cleaned up')
     await reject('installed job cannot rewind', updateSql, [jobId, tokenA, current.version, '{"status":"measured"}'], '23514')
     await db.query('select public.release_job_lock($1,$2)', [jobId, tokenA])
     await actor(users[1])
@@ -212,6 +286,17 @@ test('schema, access policies, editing leases and complete workflow', { timeout:
     const atomicJob = await jobRow(atomicId)
     expect(atomicJob.status === 'cut' && Number(atomicJob.width_cm) === 76 && atomicJob.thickness_mm === 20, 'corrected measurement and direct mark cut are atomic')
     expect(atomicJob.measured_by === users[0] && atomicJob.cut_by === users[0] && atomicJob.cutting_at === null, 'atomic mark cut records both real authors without intermediate stage')
+    const atomicPhotos = [
+      `${atomicId}/30000000-0000-4000-8000-000000000001.jpg`,
+      `${atomicId}/30000000-0000-4000-8000-000000000002.png`,
+    ]
+    await db.query('insert into storage.objects(bucket_id,name,owner_id) values($1,$2,$3)', ['job-photos', atomicPhotos[0], users[0]])
+    await reject('initial placement verifies every selected photo atomically', updateSql, [atomicId, tokenA, atomicJob.version, JSON.stringify({ status: 'installed', photo_paths: atomicPhotos })], '23514')
+    expect((await jobRow(atomicId)).status === 'cut' && (await jobRow(atomicId)).version === atomicJob.version, 'failed multiple-photo placement keeps original cut state and version')
+    await db.query('insert into storage.objects(bucket_id,name,owner_id) values($1,$2,$3)', ['job-photos', atomicPhotos[1], users[0]])
+    await update(atomicId, tokenA, atomicJob.version, { status: 'installed', photo_paths: atomicPhotos })
+    const installedWithTwo = await jobRow(atomicId)
+    expect(installedWithTwo.status === 'installed' && installedWithTwo.photo_paths.length === 2 && installedWithTwo.photo_path === atomicPhotos[0] && installedWithTwo.installed_by === users[0], 'initial placement saves multiple uploaded photos and real installer in one transaction')
 
     // Simulate older live data. Migration must separate real quantities and
     // collapse the removed stage, rather than silently dropping a felpudo.
