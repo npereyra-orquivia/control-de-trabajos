@@ -52,8 +52,8 @@ export function createReportDocument(rows, kind, { logo, images = new Map(), cre
   const total = rows.reduce((sum, row) => sum + row.quantity, 0);
   const completed = rows.filter(row => row.status === "Colocado").reduce((sum, row) => sum + row.quantity, 0);
   doc.setFillColor(...PAPER); doc.roundedRect(left, y - 4, right - left, 22, 2, 2, "F");
-  text(`${rows.length} ${kind === "mat" ? "felpudos" : "locales"} en esta selección`, left + 5, y + 3, 11, "bold", GREEN);
-  text(kind === "mat" ? `${completed} colocados · ${total - completed} pendientes` : `${total} aparatos · ${completed} colocados · ${total - completed} por colocar`, left + 5, y + 10, 9);
+  text(`${rows.length} ${kind === "mat" ? rows.length === 1 ? "felpudo" : "felpudos" : rows.length === 1 ? "local" : "locales"} en esta selección`, left + 5, y + 3, 11, "bold", GREEN);
+  text(kind === "mat" ? `${completed} colocado${completed === 1 ? "" : "s"} · ${total - completed} pendiente${total - completed === 1 ? "" : "s"}` : `${total} aparato${total === 1 ? "" : "s"} · ${completed} colocado${completed === 1 ? "" : "s"} · ${total - completed} por colocar`, left + 5, y + 10, 9);
   y += 29;
   text("RESUMEN DE TRABAJOS", left, y, 10, "bold", GREEN); y += 6;
   const columns = kind === "mat" ? [16, 76, 116, 144, 170] : [16, 85, 108, 150];
