@@ -107,6 +107,8 @@ function errorMessage(error: unknown): string {
         : "No se ha podido completar la operación.";
   if (/Invalid login credentials/i.test(raw))
     return "El usuario, el correo o la contraseña no son correctos.";
+  if (/Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i.test(raw))
+    return "La app se ha actualizado. Recarga la página para continuar con la última versión.";
   if (/Failed to fetch|NetworkError|fetch failed/i.test(raw))
     return "No hay conexión. Comprueba la red y vuelve a intentarlo.";
   if (code === "email_not_confirmed" || /Email not confirmed/i.test(raw))
@@ -701,7 +703,9 @@ export default function App() {
         {error && (
           <div className="error-banner" role="alert">
             <span>{error}</span>
-            <button onClick={() => void refresh()}>Reintentar</button>
+            <button onClick={() => error.startsWith("La app se ha actualizado.") ? window.location.reload() : void refresh()}>
+              {error.startsWith("La app se ha actualizado.") ? "Recargar app" : "Reintentar"}
+            </button>
           </div>
         )}
         {tab === "jobs" && (
