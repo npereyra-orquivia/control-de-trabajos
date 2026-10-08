@@ -142,7 +142,7 @@ create table if not exists public.jobs (
   address text not null default '' check (char_length(address) <= 300),
   width_cm numeric(8, 2) not null check (width_cm > 0 and width_cm <= 100000),
   length_cm numeric(8, 2) not null check (length_cm > 0 and length_cm <= 100000),
-  quantity integer not null default 1 check (quantity between 1 and 100),
+  quantity integer not null default 1 constraint jobs_quantity_check check (quantity = 1),
   thickness_mm smallint constraint jobs_thickness_mm_check
     check (thickness_mm is null or thickness_mm in (17, 20)),
   material text not null default '' check (char_length(material) <= 100),
@@ -150,7 +150,7 @@ create table if not exists public.jobs (
     check (char_length(btrim(responsible_name)) <= 100),
   notes text not null default '' check (char_length(notes) <= 3000),
   status text not null default 'measured'
-    check (status in ('measured', 'cutting', 'cut', 'installed')),
+    constraint jobs_status_check check (status in ('measured', 'cut', 'installed')),
   photo_path text,
   measured_at timestamptz not null default now(),
   cutting_at timestamptz,
@@ -204,6 +204,63 @@ begin
   end if;
 end;
 $$;
+
+-- Serializa la separación con las ediciones que ya estén en curso.
+lock table public.jobs in access exclusive mode;
+drop trigger if exists jobs_prepare on public.jobs;
+
+do $$
+declare
+  source_job public.jobs%rowtype;
+  piece integer;
+  piece_name text;
+begin
+  -- Una foto pertenece a la carpeta del identificador de un felpudo. No se
+  -- atribuye una misma foto a nuevas tareas colocadas ni se inventa su prueba.
+  if exists (select 1 from public.jobs where quantity > 1 and status = 'installed') then
+    raise exception 'Hay trabajos colocados con varias unidades. Sepáralos con su foto individual antes de actualizar.'
+      using errcode = '23514';
+  end if;
+
+  for source_job in select * from public.jobs where quantity > 1 order by id loop
+    for piece in 2..source_job.quantity loop
+      piece_name := source_job.store_name || ' · felpudo ' || piece || '/' || source_job.quantity;
+      insert into public.jobs (
+        store_name, address, width_cm, length_cm, quantity, thickness_mm,
+        material, responsible_name, notes, status, photo_path,
+        measured_at, cutting_at, cut_at, installed_at, version,
+        created_at, updated_at, created_by, updated_by,
+        measured_by, cutting_by, cut_by, installed_by
+      ) values (
+        case when char_length(piece_name) <= 140 then piece_name else source_job.store_name end,
+        source_job.address, source_job.width_cm, source_job.length_cm, 1, source_job.thickness_mm,
+        source_job.material, source_job.responsible_name, source_job.notes, source_job.status, null,
+        source_job.measured_at, source_job.cutting_at, source_job.cut_at, source_job.installed_at, 1,
+        source_job.created_at, pg_catalog.now(), source_job.created_by, null,
+        source_job.measured_by, source_job.cutting_by, source_job.cut_by, source_job.installed_by
+      );
+    end loop;
+    piece_name := source_job.store_name || ' · felpudo 1/' || source_job.quantity;
+    update public.jobs set
+      store_name = case when char_length(piece_name) <= 140 then piece_name else source_job.store_name end,
+      quantity = 1, version = version + 1, updated_at = pg_catalog.now(), updated_by = null
+    where id = source_job.id;
+  end loop;
+end;
+$$;
+
+-- El paso intermedio eliminado vuelve a Medido; conserva la medición y autor.
+update public.jobs set
+  status = 'measured', cutting_at = null, cutting_by = null,
+  cut_at = null, cut_by = null, installed_at = null, installed_by = null,
+  version = version + 1, updated_at = pg_catalog.now(), updated_by = null
+where status = 'cutting';
+
+alter table public.jobs drop constraint if exists jobs_quantity_check;
+alter table public.jobs add constraint jobs_quantity_check check (quantity = 1);
+alter table public.jobs drop constraint if exists jobs_status_check;
+alter table public.jobs add constraint jobs_status_check check (status in ('measured', 'cut', 'installed'));
+
 
 create index if not exists jobs_status_updated_idx on public.jobs(status, updated_at desc);
 create index if not exists jobs_created_by_idx on public.jobs(created_by);
@@ -273,9 +330,9 @@ begin
         or new.material is distinct from old.material);
     if measurement_changed and not (
       new.status = 'measured' or
-      (old.status = 'measured' and new.status = 'cutting')
+      (old.status = 'measured' and new.status = 'cut')
     ) then
-      raise exception 'Vuelve a medir el trabajo antes de cambiar medidas, espesor, material o cantidad.'
+      raise exception 'Vuelve a medir el trabajo antes de cambiar medidas, espesor o material.'
         using errcode = '23514';
     end if;
     if measurement_changed then
@@ -289,8 +346,7 @@ begin
       end if;
       if not (
         new.status = 'measured' or
-        (old.status = 'measured' and new.status = 'cutting') or
-        (old.status = 'cutting' and new.status = 'cut') or
+        (old.status = 'measured' and new.status = 'cut') or
         (old.status = 'cut' and new.status = 'installed')
       ) then
         raise exception 'Completa la fase anterior antes de avanzar el trabajo.' using errcode = '23514';
@@ -301,13 +357,6 @@ begin
           new.measured_by := actor;
           new.cutting_at := null;
           new.cutting_by := null;
-          new.cut_at := null;
-          new.cut_by := null;
-          new.installed_at := null;
-          new.installed_by := null;
-        when 'cutting' then
-          new.cutting_at := pg_catalog.now();
-          new.cutting_by := actor;
           new.cut_at := null;
           new.cut_by := null;
           new.installed_at := null;
@@ -323,6 +372,10 @@ begin
         else null; -- El CHECK de status rechaza valores desconocidos.
       end case;
     end if;
+  end if;
+
+  if new.status = 'installed' and new.photo_path is null then
+    raise exception 'Te falta hacer la foto del felpudo colocado.' using errcode = '23514';
   end if;
 
   -- Una ruta escrita a mano no basta: el objeto debe haberse subido a Storage.

@@ -6,6 +6,8 @@ La aplicación usa un proyecto de Supabase dedicado, hasta cinco trabajadores ac
 
 Para actualizar el proyecto ya instalado con el nuevo espesor, ejecuta solo [`migrations/20261007_add_thickness.sql`](migrations/20261007_add_thickness.sql). Conserva los datos y los permisos existentes; se puede volver a ejecutar.
 
+Para actualizar el flujo a **Medido → Cortado → Colocado** y garantizar una tarea por felpudo, ejecuta [`migrations/20261008_three_stages_one_mat.sql`](migrations/20261008_three_stages_one_mat.sql) después de las migraciones de espesor y responsable. Es una transacción reejecutable: elimina la fase intermedia, separa cantidades mayores de uno en tareas individuales y conserva medidas, notas, responsables y permisos. Si hubiera una tarea ya colocada con varias unidades, la migración se cancela para que se adjunte primero una foto individual a cada felpudo.
+
 1. Abre el proyecto de Supabase y entra en **SQL Editor**.
 2. Copia y ejecuta todo el contenido de [`schema.sql`](schema.sql). Crea tablas, reglas de acceso, el bucket privado `job-photos` y la suscripción Realtime. Se puede ejecutar otra vez sin borrar los trabajos. Si ya existen más de cinco cuentas sin perfil, el proceso se cancela: utiliza un proyecto dedicado.
 3. En **Authentication → Sign In / Providers**, habilita **Allow new users to sign up** y el proveedor de correo y contraseña. Mantén desactivado **Allow anonymous sign-ins**. El formulario permite que los trabajadores creen sus propias cuentas.
@@ -51,21 +53,21 @@ Esto libera una de las cinco plazas para otra cuenta. Reactivar un perfil tambi�
 
 | Campo | Uso |
 | --- | --- |
-| `store_name`, `address` | Tienda y dirección. |
+| `store_name`, `address` | Tienda y dirección antigua. La dirección se conserva en la base de datos y se oculta en la aplicación. |
 | `width_cm`, `length_cm` | Ancho y largo positivos en cm, con hasta dos decimales. |
 | `thickness_mm` | Espesor: `17` o `20` mm; `null` significa **No sé**. No se guarda como cero. |
-| `quantity` | Cantidad, por defecto 1. |
+| `quantity` | Campo interno fijo en `1`: cada tarea representa un felpudo. |
 | `material` | Las nuevas mediciones ofrecen **Coco**, **Metálico** y **No hay**. El campo de texto conserva los materiales de trabajos anteriores. |
 | `notes` | Detalles opcionales, guardados como texto vacío si no hay valor. |
-| `status` | `measured`, `cutting`, `cut`, `installed`. |
+| `status` | `measured` (Medido), `cut` (Cortado), `installed` (Colocado). |
 | `photo_path` | Ruta de la foto en el bucket privado; no se guarda una URL temporal. |
 | `version` | Versión que aumenta al guardar; evita sobrescribir datos antiguos. |
-| `measured_by`, `cutting_by`, `cut_by`, `installed_by` | Trabajador que registró la medida actual y cada paso, sin atribuirlos al creador por defecto. |
+| `measured_by`, `cut_by`, `installed_by` | Trabajador que registró la medida actual y cada paso, sin atribuirlos al creador por defecto. `cutting_by` y `cutting_at` se mantienen como columnas antiguas y no se usan en el flujo nuevo. |
 | `created_by`, `updated_by`, fechas | Auditoría que fija la base de datos. |
 
-Todos los miembros activos pueden crear, consultar y modificar trabajos. Los borrados se gestionan desde el SQL Editor, para que una eliminación directa desde el navegador no invalide la edición de otro trabajador. El flujo es `measured` → `cutting` → `cut` → `installed`; no permite saltarse pasos. Para colocar hay que partir de `cut` y subir una foto. Un trabajo colocado no vuelve a una fase anterior. Se pueden corregir las medidas y el espesor y empezar el corte en el mismo guardado, desde `measured` a `cutting`. Para cambiar medidas, espesor, material o cantidad después de empezar el corte, primero devuelve el trabajo a `measured`; así se invalidan las fechas y autores de los pasos siguientes.
+Todos los miembros activos pueden crear, consultar y modificar trabajos. Los borrados se gestionan desde el SQL Editor, para que una eliminación directa desde el navegador no invalide la edición de otro trabajador. El flujo es `measured` → `cut` → `installed`; no permite saltarse pasos. Para colocar hay que partir de `cut` y subir una foto. Si falta, el servidor devuelve **«Te falta hacer la foto del felpudo colocado»**. Un trabajo colocado no vuelve a una fase anterior. Se pueden corregir las medidas y el espesor y marcar cortado en el mismo guardado, desde `measured` a `cut`. Para cambiar medidas, espesor o material después de cortar, primero devuelve el trabajo a `measured`; así se invalidan las fechas y autores de los pasos siguientes.
 
-Al modificar medidas, espesor, material o cantidad mientras el trabajo está medido, se actualizan `measured_at` y `measured_by`. Cada cambio de fase registra su fecha y su autor. El cliente no puede escribir estos datos de auditoría. Si el esquema se actualiza sobre trabajos antiguos que no tenían autores por etapa, esos autores quedan como `null`, sin inventar su identidad. El nuevo `thickness_mm` también queda como `null` en trabajos antiguos cuyo espesor no estaba registrado; no se deduce del texto del material.
+Al modificar medidas, espesor o material mientras el trabajo está medido, se actualizan `measured_at` y `measured_by`. Cada cambio de fase registra su fecha y su autor. El cliente no puede escribir estos datos de auditoría. Si el esquema se actualiza sobre trabajos antiguos que no tenían autores por etapa, esos autores quedan como `null`, sin inventar su identidad. El nuevo `thickness_mm` también queda como `null` en trabajos antiguos cuyo espesor no estaba registrado; no se deduce del texto del material.
 
 La aplicación refresca los datos cada **120 segundos**. Para editar o cambiar el estado debe adquirir un bloqueo mediante `acquire_job_lock(p_job_id, p_token)`, con un token UUID nuevo para esa edición. La función devuelve `true` si lo obtiene y `false` si otra edición lo tiene. El bloqueo dura **180 segundos** y debe renovarse con el mismo token cada **45 segundos**, también mientras se sube una foto. Al salir, llama a `release_job_lock(p_job_id, p_token)`; si se cierra el móvil, la concesión caduca automáticamente.
 
@@ -109,6 +111,7 @@ Para verla, usa `createSignedUrl(photo_path, 300)` al abrir el trabajo; esa URL 
 - Dos usuarios abren el mismo trabajo: solo uno obtiene el bloqueo. Dos pestañas de la misma cuenta con tokens diferentes tampoco pueden editarlo a la vez.
 - Bloqueo caducado, token ajeno, versión antigua o actualización/borrado directo por REST: se rechaza.
 - Espesores distintos de 17/20 mm y del valor desconocido `null`: se rechazan.
+- La fase retirada `cutting` y cantidades distintas de `1`: se rechazan.
 - Cambiar medidas o espesor mientras el trabajo sigue cortado o colocado: se rechaza.
 - Colocado sin foto, o con una ruta inexistente: se rechaza.
 - Borrar o sobrescribir una foto referenciada desde el navegador: se rechaza.
