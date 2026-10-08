@@ -9,11 +9,18 @@ export function parseMeasure(value) {
     );
   return number;
 }
-export function validateInput(input) {
+function validDimension(value) {
+  return Number.isFinite(value) && value > 0 && value <= 10000;
+}
+
+export function validateInput(input, requestedStatus) {
+  const kind = input.job_kind ?? "mat";
+  if (kind !== "mat" && kind !== "dehumidifier")
+    throw new Error("Selecciona Felpudos o Deshumidificadores.");
   const responsible = input.responsible_name ?? "";
   if (typeof responsible !== "string" || responsible.trim().length > 100)
     throw new Error("El nombre del responsable debe tener como máximo 100 caracteres.");
-  const thickness = input.thickness_mm === undefined ? null : input.thickness_mm;
+  const thickness = kind === "dehumidifier" ? null : input.thickness_mm ?? null;
   if (thickness !== null && thickness !== 17 && thickness !== 20)
     throw new Error("El grosor debe ser 17 mm, 20 mm o «No sé».");
   if (!input.store_name.trim())
@@ -28,24 +35,35 @@ export function validateInput(input) {
     throw new Error(
       "La dirección, el material o las notas son demasiado largos.",
     );
-  if (input.quantity !== 1)
-    throw new Error("Cada trabajo corresponde a un solo felpudo.");
-  if (
-    !Number.isFinite(input.width_cm) ||
-    input.width_cm <= 0 ||
-    input.width_cm > 10000 ||
-    !Number.isFinite(input.length_cm) ||
-    input.length_cm <= 0 ||
-    input.length_cm > 10000
-  )
-    throw new Error("Revisa las medidas del felpudo.");
+  const status = requestedStatus ?? input.status ?? (kind === "dehumidifier"
+    ? "pending_installation"
+    : input.width_cm == null && input.length_cm == null ? "pending_measurement" : "measured");
+  if (kind === "dehumidifier") {
+    if (!Number.isSafeInteger(input.quantity) || input.quantity <= 0 || input.quantity > 2147483647)
+      throw new Error("Introduce un número entero de deshumidificadores mayor que 0.");
+    if (!["pending_installation", "installed"].includes(status))
+      throw new Error("Los deshumidificadores están pendientes de colocar o colocados.");
+  } else {
+    if (input.quantity !== 1)
+      throw new Error("Cada trabajo corresponde a un solo felpudo.");
+    if (!["pending_measurement", "measured", "cut", "installed", "pending_adjustment"].includes(status))
+      throw new Error("Selecciona una fase válida para el felpudo.");
+    const noDimensions = input.width_cm == null && input.length_cm == null;
+    const bothDimensions = validDimension(input.width_cm) && validDimension(input.length_cm);
+    if (!bothDimensions && !(status === "pending_measurement" && noDimensions))
+      throw new Error("Revisa las medidas del felpudo. Completa ambos lados para marcarlo medido.");
+  }
   return {
     ...input,
+    job_kind: kind,
+    status,
+    width_cm: kind === "dehumidifier" ? null : input.width_cm ?? null,
+    length_cm: kind === "dehumidifier" ? null : input.length_cm ?? null,
     responsible_name: responsible.trim(),
     thickness_mm: thickness,
     store_name: input.store_name.trim(),
     address: input.address.trim(),
-    material: input.material.trim(),
+    material: kind === "dehumidifier" ? "" : input.material.trim(),
     notes: input.notes.trim(),
   };
 }
@@ -63,6 +81,14 @@ export function validatePhoto(file) {
   if (file.size > 10 * 1024 * 1024)
     throw new Error("La foto supera 10 MB. Elige una más pequeña.");
 }
-export function nextStatus(status) {
-  return { measured: "cut", cut: "installed" }[status] ?? null;
+export function nextStatus(status, kind) {
+  if (kind === "dehumidifier") return status === "pending_installation" ? "installed" : null;
+  if (kind === "mat" && status === "pending_installation") return null;
+  return {
+    pending_measurement: "measured",
+    measured: "cut",
+    cut: "installed",
+    pending_installation: "installed",
+    pending_adjustment: "installed",
+  }[status] ?? null;
 }

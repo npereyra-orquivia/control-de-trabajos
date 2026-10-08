@@ -3,6 +3,8 @@ export interface MaterialOption {
   label: string;
 }
 export interface FilterableJob {
+  job_kind?: "mat" | "dehumidifier";
+  review_status?: "pending" | "approved" | "needs_adjustment";
   status: string;
   store_name: string;
   address?: string;
@@ -11,6 +13,9 @@ export interface FilterableJob {
   responsible_name?: string | null;
 }
 export interface JobFilters {
+  job_kind?: "all" | "mat" | "dehumidifier";
+  review_status?: "all" | "pending" | "approved" | "needs_adjustment";
+  review?: "all" | "pending" | "approved" | "needs_adjustment";
   status: string;
   material: string;
   thickness: "all" | "17" | "20" | "unknown";

@@ -1,3 +1,5 @@
+import { jobKind } from "./workflow.mjs";
+
 function normalized(value) {
   return (typeof value === "string" ? value : "")
     .trim()
@@ -75,17 +77,25 @@ export function getResponsibleOptions(jobs, profiles) {
 }
 
 export function matchesJob(job, filters) {
+  if (filters.job_kind && filters.job_kind !== "all" && jobKind(job) !== filters.job_kind)
+    return false;
+  const review = filters.review_status ?? filters.review;
+  if (review && review !== "all") {
+    if (jobKind(job) !== "mat" || (job.review_status ?? "pending") !== review) return false;
+    // A pending review starts once installation has its final photos.
+    if (review === "pending" && job.status !== "installed") return false;
+  }
   if (filters.status !== "all" && job.status !== filters.status) return false;
-  if (filters.material !== "all" && materialKey(job.material) !== filters.material)
+  if (jobKind(job) === "mat" && filters.material !== "all" && materialKey(job.material) !== filters.material)
     return false;
   if (
     filters.responsible &&
     filters.responsible !== "all" &&
     responsibleKey(job.responsible_name) !== filters.responsible
   ) return false;
-  if (filters.thickness === "unknown") {
+  if (jobKind(job) === "mat" && filters.thickness === "unknown") {
     if (job.thickness_mm != null) return false;
-  } else if (filters.thickness !== "all") {
+  } else if (jobKind(job) === "mat" && filters.thickness !== "all") {
     if (
       !["17", "20"].includes(filters.thickness) ||
       job.thickness_mm !== Number(filters.thickness)
