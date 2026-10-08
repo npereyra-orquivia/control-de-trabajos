@@ -790,7 +790,7 @@ export default function App() {
                 </div>
               </div>
               <div className="list-toolbar">
-                <button className="button report-button" onClick={() => void downloadReport()} disabled={exporting || !filtered.length || (!demo && !online)}>
+                <button className="secondary report-button" onClick={() => void downloadReport()} disabled={exporting || !filtered.length || (!demo && !online)}>
                   {exporting ? <LoaderCircle size={17} className="spin" /> : <Download size={17} />}
                   {exporting ? "Preparando informe…" : "Exportar informe"}
                 </button>
