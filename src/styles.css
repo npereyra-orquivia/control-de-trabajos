@@ -2113,7 +2113,11 @@ h1 > span {
   line-height: 1.7;
 }
 .approve-review {
-  min-height: 44px;
+  width: 100%;
+  min-height: 58px;
+  padding: 16px 20px;
+  font-size: 16px;
+  font-weight: 600;
 }
 .correction-picker,
 .job-history {
@@ -2125,13 +2129,54 @@ h1 > span {
   font-size: 12px;
   line-height: 1.7;
 }
-.correction-picker summary,
 .job-history summary {
   cursor: pointer;
   font-weight: 600;
 }
-.correction-picker[open] summary {
-  margin-bottom: 14px;
+.correction-picker > .review-choice-heading {
+  margin: 0 0 11px;
+  color: #485c42;
+  font-size: 12px;
+  font-weight: 600;
+}
+.correction-options {
+  display: grid;
+  gap: 9px;
+}
+.correction-option {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-height: 54px;
+  padding: 13px 14px;
+  border: 1px solid #dbcdbb;
+  border-radius: 9px;
+  background: #fcf6ee;
+  color: #765335;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  transition: border-color .15s ease, background .15s ease;
+}
+.correction-option > svg {
+  flex-shrink: 0;
+}
+.correction-option > span {
+  flex: 1;
+}
+.correction-option:hover:not(:disabled) {
+  border-color: #b99170;
+  background: #f5e7d6;
+}
+.correction-option.selected {
+  border-color: #9b6640;
+  background: #f1dfc9;
+  box-shadow: 0 0 0 1px #9b6640;
+}
+.correction-options + p {
+  margin-top: 14px;
 }
 .correction-picker label {
   display: block;

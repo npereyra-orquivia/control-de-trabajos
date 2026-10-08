@@ -1059,7 +1059,7 @@ export default function App() {
             </div>
             <div className="help-card">
               <ShieldCheck />
-              <div><h3>Revisa la colocación</h3><p>Abre un felpudo colocado y pulsa Está bien si está correcto. Si necesita una corrección, elige Recortar, Añadir una parte o Reponer entero y describe el problema. El trabajo vuelve a pendientes. Las fotos anteriores se conservan en el historial y la corrección necesita fotos nuevas.</p></div>
+              <div><h3>Revisa la colocación</h3><p>Abre un felpudo colocado. Primero verás los botones Hay que recortar, Hay que añadir una parte y Hay que reponer entero. Si necesita una corrección, pulsa el que corresponda, describe el problema y reabre el trabajo. Vuelve a pendientes, conserva las fotos anteriores en el historial y necesita fotos nuevas al terminar. Si no hay nada que corregir, pulsa el botón Está bien.</p></div>
             </div>
             <div className="help-card">
               <AirVent />
@@ -2059,23 +2059,20 @@ function JobEditor({
           <span className={`review-badge ${job.review_status || "pending"}`}>{reviewLabels[job.review_status || "pending"]}</span>
           {job.reviewed_at && job.review_status === "approved" && <p>Revisado por {person(job.reviewed_by || "")} · {dateTime(job.reviewed_at)}</p>}
           {canEdit && <>
-            <button className="secondary approve-review" disabled={busy || !online || job.review_status === "approved"} onClick={() => void review("approve")}><Check size={17} />Está bien</button>
-            <details className="correction-picker">
-              <summary>Hay que corregirlo</summary>
-              <label>Tipo de corrección
-                <select value={reviewAction} disabled={busy} onChange={(event) => setReviewAction(event.target.value as ReworkKind | "")}>
-                  <option value="">Elige una corrección</option>
-                  <option value="trim">Recortar</option>
-                  <option value="add">Añadir una parte</option>
-                  <option value="replace">Reponer entero</option>
-                </select>
-              </label>
+            <div className="correction-picker">
+              <p className="review-choice-heading">¿Necesita una corrección?</p>
+              <div className="correction-options" role="group" aria-label="Tipo de corrección">
+                <button type="button" className={`correction-option ${reviewAction === "trim" ? "selected" : ""}`} aria-pressed={reviewAction === "trim"} disabled={busy} onClick={() => setReviewAction(reviewAction === "trim" ? "" : "trim")}><Scissors size={21} /><span>Hay que recortar</span>{reviewAction === "trim" && <Check size={18} />}</button>
+                <button type="button" className={`correction-option ${reviewAction === "add" ? "selected" : ""}`} aria-pressed={reviewAction === "add"} disabled={busy} onClick={() => setReviewAction(reviewAction === "add" ? "" : "add")}><Plus size={21} /><span>Hay que añadir una parte</span>{reviewAction === "add" && <Check size={18} />}</button>
+                <button type="button" className={`correction-option ${reviewAction === "replace" ? "selected" : ""}`} aria-pressed={reviewAction === "replace"} disabled={busy} onClick={() => setReviewAction(reviewAction === "replace" ? "" : "replace")}><RefreshCw size={21} /><span>Hay que reponer entero</span>{reviewAction === "replace" && <Check size={18} />}</button>
+              </div>
               {reviewAction && <>
                 <p>{reviewAction === "trim" ? "El trabajo vuelve a Por ajustar. Después se cierra con fotos nuevas." : reviewAction === "add" ? "El trabajo vuelve a Por medir. Se miden y cortan las dimensiones de la parte nueva." : "El trabajo vuelve a Por medir para repetir la medición, el corte y la colocación."} Las fotos anteriores se conservarán en el historial.</p>
                 <label>Qué hay que corregir <span>*</span><textarea rows={3} maxLength={3000} value={reviewNotes} disabled={busy} onChange={(event) => setReviewNotes(event.target.value)} placeholder="Describe el problema y dónde está…" /></label>
                 <button className="primary" disabled={busy || !online} onClick={() => void review(reviewAction)}><RefreshCw size={17} />Reabrir para corregir</button>
               </>}
-            </details>
+            </div>
+            <button className="primary approve-review" disabled={busy || !online || job.review_status === "approved"} onClick={() => void review("approve")}><Check size={23} />Está bien</button>
           </>}
         </section>}
         {job && <JobHistory job={job} demo={demo} person={person} />}
