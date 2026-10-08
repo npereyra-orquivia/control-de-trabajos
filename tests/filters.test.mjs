@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { materialKey, getMaterialOptions, matchesJob } from "../src/lib/filters.mjs";
+import { materialKey, getMaterialOptions, responsibleKey, getResponsibleOptions, matchesJob } from "../src/lib/filters.mjs";
 
 const baseOptions = [
   { value: "coco", label: "Coco" },
@@ -75,4 +75,66 @@ test("unknown thickness includes null and older rows with no field, and excludes
   assert.equal(matchesJob({ status: "measured", store_name: "Legacy", material: "coco" }, { ...all, thickness: "unknown" }), true);
   assert.equal(matchesJob(jobs[0], { ...all, thickness: "unknown" }), false);
   assert.equal(matchesJob(jobs[0], { ...all, thickness: "18" }), false);
+});
+
+test("responsible names normalize accents and spacing while matching the whole name", () => {
+  assert.equal(responsibleKey("  ANDRES   GARCIA  "), responsibleKey("Andrés García"));
+  assert.notEqual(responsibleKey("Andrés"), responsibleKey("Andrés García"));
+  assert.notEqual(responsibleKey("Lili"), responsibleKey("Liliana"));
+  for (const name of ["", "   ", null, undefined]) assert.equal(responsibleKey(name), "unassigned");
+  assert.equal(responsibleKey("All"), "responsible:all");
+  assert.equal(responsibleKey("Unassigned"), "responsible:unassigned");
+});
+
+test("responsible options include active team members and saved names outside the team", () => {
+  const assigned = [
+    { responsible_name: "  ANDRES   GARCIA " },
+    { responsible_name: "Byron" },
+    { responsible_name: "Ex trabajador" },
+    { responsible_name: " EX  TRABAJADOR " },
+    { responsible_name: "Andrés" },
+    { responsible_name: null },
+    {},
+  ];
+  const profiles = [
+    { display_name: "Andrés García", active: true },
+    { display_name: "Nicole", active: true },
+    { display_name: "Ex trabajador", active: false },
+    { display_name: "Inactivo sin trabajo", active: false },
+    { display_name: "", active: true },
+  ];
+  assert.deepEqual(getResponsibleOptions(assigned, profiles), [
+    { value: "unassigned", label: "Sin asignar" },
+    { value: "responsible:andres", label: "Andrés" },
+    { value: "responsible:andres garcia", label: "Andrés García" },
+    { value: "responsible:byron", label: "Byron" },
+    { value: "responsible:ex trabajador", label: "Ex trabajador" },
+    { value: "responsible:nicole", label: "Nicole" },
+  ]);
+  assert.equal(assigned[0].responsible_name, "  ANDRES   GARCIA ");
+});
+
+test("unassigned filter includes missing, empty, and whitespace names only", () => {
+  const assigned = [
+    ...[undefined, null, "", "  ", "Nicole", "Unassigned"].map((responsible_name) => ({ ...jobs[0], responsible_name })),
+  ];
+  assert.equal(assigned.filter((job) => matchesJob(job, { ...all, responsible: "unassigned" })).length, 4);
+  assert.equal(assigned.filter((job) => matchesJob(job, { ...all, responsible: "all" })).length, 6);
+  assert.equal(assigned.filter((job) => matchesJob(job, { ...all, responsible: responsibleKey("Unassigned") })).length, 1);
+});
+
+test("responsible selection combines with status, material, thickness, and local search", () => {
+  const job = { ...jobs[0], responsible_name: "  ANDRES  GARCIA  " };
+  const filters = { status: "measured", material: "coco", thickness: "20", search: "cafe", responsible: responsibleKey("Andrés García") };
+  assert.equal(matchesJob(job, filters), true);
+  for (const changed of [
+    { responsible: responsibleKey("Nicole") },
+    { responsible: "unassigned" },
+    { status: "cut" },
+    { material: "metálico" },
+    { thickness: "17" },
+    { search: "sur" },
+  ]) assert.equal(matchesJob(job, { ...filters, ...changed }), false);
+  assert.equal(matchesJob(job, { ...all, responsible: "all" }), true);
+  assert.equal(matchesJob(job, all), true);
 });
