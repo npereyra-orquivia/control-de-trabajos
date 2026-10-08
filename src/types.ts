@@ -18,6 +18,7 @@ export interface Job {
   notes: string;
   status: Status;
   photo_path: string | null;
+  photo_paths?: string[];
   measured_at: string;
   cutting_at: string | null;
   cut_at: string | null;
@@ -49,7 +50,7 @@ export type JobInput = Pick<
   | "responsible_name"
   | "notes"
 >;
-export type JobPatch = Partial<JobInput & Pick<Job, "status" | "photo_path">>;
+export type JobPatch = Partial<JobInput & Pick<Job, "status" | "photo_path" | "photo_paths">>;
 export const MATERIALS = [
   { value: "coco", label: "Coco" },
   { value: "metálico", label: "Metálico" },

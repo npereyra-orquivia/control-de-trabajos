@@ -620,7 +620,21 @@ h1 > span {
   box-shadow: 0 7px 23px #203b3309;
 }
 .job-card.installed {
-  background: #fcfdf8;
+  background: #e9f1e3;
+  border-color: #bccfb0;
+}
+.job-card.installed:hover {
+  border-color: #8fab7e;
+}
+.job-card.installed .measure-panel {
+  background: #f7faf3;
+}
+.job-card.installed .card-action {
+  background: #dce9d3;
+  border-top-color: #c6d8bb;
+}
+.job-card.installed .card-action:hover:not(:disabled) {
+  background: #d1e2c5;
 }
 .card-top {
   display: flex;
@@ -657,8 +671,8 @@ h1 > span {
   background: #e9efeb;
 }
 .status-pill.installed {
-  color: #506e42;
-  background: #e9efdf;
+  color: #31533d;
+  background: #d3e3c7;
 }
 .job-number {
   color: #969b90;
@@ -1806,6 +1820,80 @@ h1 > span {
 .photo-picker:hover {
   background: #eff3e4;
   border-color: #819969;
+}
+.photo-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.photo-actions .photo-picker {
+  min-height: 106px;
+  padding: 13px 10px;
+}
+.photo-actions.is-busy {
+  opacity: .65;
+  pointer-events: none;
+}
+.photo-section > .photo-formats {
+  font-size: 10px;
+}
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 15px;
+}
+.photo-grid > figure {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid #dce4cf;
+  border-radius: 9px;
+  background: #f7f9f2;
+}
+.photo-grid img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  background: #f2f4eb;
+}
+.photo-grid figcaption {
+  padding: 8px;
+  color: #526454;
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.remove-photo {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 1px solid #cad5bf;
+  border-radius: 50%;
+  background: #fffefa;
+  color: var(--green);
+  box-shadow: 0 1px 5px #203b3320;
+}
+.remove-photo:hover:not(:disabled) {
+  background: #e9efdf;
+}
+.saved-photo-grid > a {
+  min-width: 0;
+  color: #526454;
+  font-size: 11px;
+}
+.saved-photo-grid > a > small {
+  display: block;
+  padding-top: 7px;
+  text-align: center;
 }
 .photo-picker > span {
   font-size: 12px;

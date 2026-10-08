@@ -40,7 +40,8 @@ import {
 } from "./types";
 import { supabase } from "./lib/supabase";
 import { resolveLoginEmail } from "./lib/login.mjs";
-import { getMaterialOptions, getResponsibleOptions, matchesJob } from "./lib/filters.mjs";
+import { getMaterialOptions, getResponsibleOptions, matchesJob, sortJobsForWorkspace } from "./lib/filters.mjs";
+import { appendPhotoPaths, jobPhotoPaths, photoPatchIsSaved } from "./lib/photos.mjs";
 import { combineJobNotes, editableNotesLimit, prepareJobNotes } from "./lib/notes.mjs";
 import {
   acquireDemo,
@@ -171,6 +172,8 @@ export default function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const refreshInFlight = useRef(false);
   const refreshGeneration = useRef(0);
+  const photoUploads = useRef(new Map<File, string>());
+  const uncertainPhotoUploads = useRef(new Set<File>());
   const identity = demo ? demoProfile.id : session?.user.id;
   const profile = profiles.find((item) => item.id === identity);
 
@@ -318,10 +321,6 @@ export default function App() {
     if (opening) return;
     setOpening(job.id);
     try {
-      if (job.status === "installed") {
-        setEditor({ job, token: null, readonly: true });
-        return;
-      }
       const token = crypto.randomUUID();
       const acquired = await acquire(job.id, token);
       if (!acquired) {
@@ -341,10 +340,7 @@ export default function App() {
           if (result.error) throw result.error;
           fresh = result.data as Job;
         }
-        if (fresh.status === "installed") {
-          await release(job.id, token);
-          setEditor({ job: fresh, token: null, readonly: true });
-        } else setEditor({ job: fresh, token, readonly: false });
+        setEditor({ job: fresh, token, readonly: false });
         void refresh();
       } catch (openError) {
         await release(job.id, token).catch(() => {});
@@ -357,14 +353,40 @@ export default function App() {
     }
   }
   async function closeEditor(refreshAfter = true) {
-    if (editor?.job && editor.token)
+    if (editor?.job && editor.token) {
+      await cleanUnusedUploads(editor.job.id);
       await release(editor.job.id, editor.token).catch(() => {});
+    }
+    photoUploads.current.clear();
+    uncertainPhotoUploads.current.clear();
     setEditor(null);
     if (refreshAfter) void refresh();
   }
-  async function saveJob(input: JobInput, newStatus?: Status, photo?: File) {
+  async function cleanUnusedUploads(jobId: string) {
+    if (demo || !photoUploads.current.size) return;
+    // A failed response can still mean the database committed. Only remove
+    // objects after a fresh read confirms that the job does not reference them.
+    try {
+      const current = await supabase!.from("jobs").select("*").eq("id", jobId).single();
+      if (current.error) return;
+      const attached = new Set(jobPhotoPaths(current.data as Job));
+      const unused = [...photoUploads.current.values()].filter((path) => !attached.has(path));
+      if (!unused.length) return;
+      const removed = await supabase!.storage.from("job-photos").remove(unused);
+      if (!removed.error) {
+        for (const [file, path] of photoUploads.current) {
+          if (unused.includes(path)) {
+            photoUploads.current.delete(file);
+            uncertainPhotoUploads.current.delete(file);
+          }
+        }
+      }
+    } catch {
+      // Keep uncertain uploads available for retry; attached images are never deleted.
+    }
+  }
+  async function saveJob(input: JobInput, newStatus?: Status, photos: File[] = []) {
     if (!editor) return;
-    let photoPath: string | null = null;
     try {
       const validated = validateInput(input);
       if (!editor.job) {
@@ -390,37 +412,55 @@ export default function App() {
           }
         }
       } else {
-        const patch: JobPatch = { ...validated };
+        const patch: JobPatch = editor.job.status === "installed" ? {} : { ...validated };
         if (newStatus) patch.status = newStatus;
-        if (photo && newStatus === "installed") {
-          validatePhoto(photo);
-          if (demo) {
-            // Examples are deliberately small so photos fit browser storage.
-            photoPath = await shrinkDemoPhoto(photo);
-          } else {
-            const ext = (
-              {
-                "image/jpeg": "jpg",
-                "image/png": "png",
-                "image/webp": "webp",
-                "image/heic": "heic",
-                "image/heif": "heif",
-              } as Record<string, string>
-            )[photo.type];
-            photoPath = `${editor.job.id}/${crypto.randomUUID()}.${ext}`;
-            const result = await supabase!.storage
-              .from("job-photos")
-              .upload(photoPath, photo, {
-                upsert: false,
-                contentType: photo.type,
-              });
-            if (result.error) {
-              photoPath = null;
-              throw result.error;
+        if (photos.length) {
+          if (newStatus !== "installed" && editor.job.status !== "installed")
+            throw new Error("Las fotos se guardan al marcar Colocado.");
+          photos.forEach(validatePhoto);
+          const addedPaths: string[] = [];
+          for (const photo of photos) {
+            let photoPath = photoUploads.current.get(photo);
+            if (photoPath && uncertainPhotoUploads.current.has(photo) && !demo) {
+              const exists = await supabase!.storage.from("job-photos").createSignedUrl(photoPath, 60);
+              if (exists.error) {
+                const missing = /not found/i.test(exists.error.message) ||
+                  ("statusCode" in exists.error && String(exists.error.statusCode) === "404");
+                if (!missing) throw exists.error;
+                photoUploads.current.delete(photo);
+                uncertainPhotoUploads.current.delete(photo);
+                photoPath = undefined;
+              } else uncertainPhotoUploads.current.delete(photo);
             }
+            if (!photoPath) {
+              if (demo) {
+                photoPath = await shrinkDemoPhoto(photo);
+                photoUploads.current.set(photo, photoPath);
+              } else {
+                const ext = ({
+                  "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
+                  "image/heic": "heic", "image/heif": "heif",
+                } as Record<string, string>)[photo.type];
+                photoPath = `${editor.job.id}/${crypto.randomUUID()}.${ext}`;
+                // Remember the candidate before sending, since the response can be lost.
+                photoUploads.current.set(photo, photoPath);
+                uncertainPhotoUploads.current.add(photo);
+                const result = await supabase!.storage.from("job-photos").upload(photoPath, photo, {
+                  upsert: false, contentType: photo.type,
+                });
+                if (result.error) {
+                  throw result.error;
+                }
+                uncertainPhotoUploads.current.delete(photo);
+              }
+            }
+            addedPaths.push(photoPath);
           }
-          patch.photo_path = photoPath;
+          patch.photo_paths = appendPhotoPaths(editor.job, addedPaths);
         }
+        if ((newStatus || editor.job.status) === "installed" &&
+          !(patch.photo_paths || jobPhotoPaths(editor.job)).length)
+          throw new Error("Añade al menos una foto antes de marcar Colocado.");
         if (demo)
           updateDemo(editor.job.id, editor.token!, editor.job.version, patch);
         else {
@@ -430,23 +470,25 @@ export default function App() {
             p_expected_version: editor.job.version,
             p_patch: patch,
           });
-          if (result.error) throw result.error;
+          if (result.error) {
+            // Reconcile an uncertain RPC response before reporting failure or
+            // cleaning uploaded objects. A retry must not lose a saved gallery.
+            const current = await supabase!.from("jobs").select("*").eq("id", editor.job.id).single();
+            if (current.error || !photoPatchIsSaved(current.data as Job, patch, editor.job.version))
+              throw result.error;
+          }
         }
       }
     } catch (saveError) {
-      if (photoPath && !demo)
-        await supabase!.storage
-          .from("job-photos")
-          .remove([photoPath])
-          .catch(() => {});
+      if (editor.job) await cleanUnusedUploads(editor.job.id);
       throw saveError;
     }
     setToast(
       newStatus === "installed"
-        ? "Trabajo terminado. Foto guardada."
+        ? `Trabajo terminado. ${photos.length === 1 ? "Foto guardada" : "Fotos guardadas"}.`
         : !editor.job
           ? "Medición guardada. Ya está lista para cortar."
-          : "Trabajo actualizado.",
+          : editor.job.status === "installed" ? "Fotos añadidas al trabajo." : "Trabajo actualizado.",
     );
     await closeEditor();
   }
@@ -485,13 +527,13 @@ export default function App() {
       />
     );
 
-  const filtered = jobs.filter((job) => matchesJob(job, {
+  const filtered = sortJobsForWorkspace(jobs.filter((job) => matchesJob(job, {
     status: filter,
     material: materialFilter,
     thickness: thicknessFilter,
     responsible: responsibleFilter,
     search,
-  }));
+  })));
   const materialOptions = getMaterialOptions(jobs, MATERIALS);
   const responsibleOptions = getResponsibleOptions(jobs, profiles);
   if (responsibleFilter !== "all" && !responsibleOptions.some((item) => item.value === responsibleFilter)) {
@@ -910,8 +952,8 @@ export default function App() {
                 },
                 {
                   icon: Camera,
-                  title: "03 · Coloca y haz la foto",
-                  text: "Abre un trabajo Cortado. Coloca el felpudo, añade su foto y pulsa Marcar colocado. Sin foto no se puede completar.",
+                  title: "03 · Coloca y añade las fotos",
+                  text: "Abre un trabajo Cortado. Coloca el felpudo, añade al menos una foto y pulsa Marcar colocado. Puedes añadir más fotos, también después. La tarjeta quedará verde y al final de la lista.",
                 },
               ].map((item) => (
                 <div className="guide-card" key={item.title}>
@@ -939,7 +981,7 @@ export default function App() {
                 <h3>Información al día</h3>
                 <p>
                   Los datos se actualizan cada dos minutos y al volver a la app.
-                  La actualización conserva las medidas y la foto que estés
+                  La actualización conserva las medidas y las fotos que estés
                   preparando. Necesitas conexión para guardar.
                 </p>
               </div>
@@ -1363,7 +1405,7 @@ function JobEditor({
 }: {
   state: EditorState;
   onClose: () => Promise<void>;
-  onSave: (input: JobInput, status?: Status, photo?: File) => Promise<void>;
+  onSave: (input: JobInput, status?: Status, photos?: File[]) => Promise<void>;
   acquire: (id: string, token: string) => Promise<boolean>;
   person: (id: string) => string;
   profiles: Profile[];
@@ -1394,9 +1436,9 @@ function JobEditor({
   const [busy, setBusy] = useState(false);
   const [expired, setExpired] = useState(false);
   const [error, setError] = useState("");
-  const [photo, setPhoto] = useState<File>();
-  const [preview, setPreview] = useState("");
-  const [savedPhoto, setSavedPhoto] = useState("");
+  const [photos, setPhotos] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
+  const [savedPhotos, setSavedPhotos] = useState<{ path: string; url: string }[]>([]);
   const [photoError, setPhotoError] = useState("");
   const dialogRef = useRef<HTMLDialogElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -1404,7 +1446,10 @@ function JobEditor({
   const deadline = useRef(Date.now() + 180000);
   const renewInFlight = useRef(false);
   const canEdit = !state.readonly && !expired;
-  const measurementsEditable = canEdit && (!job || job.status === "measured");
+  const detailsEditable = canEdit && job?.status !== "installed" && !busy;
+  const measurementsEditable = detailsEditable && (!job || job.status === "measured");
+  const photoPaths = jobPhotoPaths(job);
+  const photoPathsKey = JSON.stringify(photoPaths);
 
   useEffect(() => {
     const dialog = dialogRef.current!;
@@ -1471,40 +1516,62 @@ function JobEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job?.id, state.token]);
   useEffect(() => {
-    if (!photo) {
-      setPreview("");
+    const urls = photos.map((photo) => URL.createObjectURL(photo));
+    setPreviews(urls);
+    return () => urls.forEach((url) => URL.revokeObjectURL(url));
+  }, [photos]);
+  useEffect(() => {
+    if (!photoPaths.length) {
+      setSavedPhotos([]);
       return;
     }
-    const url = URL.createObjectURL(photo);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [photo]);
-  useEffect(() => {
-    if (!job?.photo_path) return;
     let live = true;
-    async function loadPhoto() {
+    async function loadPhotos() {
       if (demo) {
-        setSavedPhoto(job!.photo_path!);
+        setSavedPhotos(photoPaths.map((path) => ({ path, url: path })));
         return;
       }
-      const result = await supabase!.storage
-        .from("job-photos")
-        .createSignedUrl(job!.photo_path!, 3600);
-      if (live) {
-        if (result.error) setPhotoError(errorMessage(result.error));
-        else {
-          setSavedPhoto(result.data.signedUrl);
-          setPhotoError("");
+      try {
+        const results = await Promise.all(photoPaths.map(async (path) => {
+          const result = await supabase!.storage.from("job-photos").createSignedUrl(path, 3600);
+          return { path, result };
+        }));
+        if (live) {
+          setSavedPhotos(results.flatMap(({ path, result }) =>
+            result.data ? [{ path, url: result.data.signedUrl }] : []));
+          const failed = results.find(({ result }) => result.error);
+          setPhotoError(failed ? "No se han podido cargar todas las fotos. Cierra y vuelve a abrir la ficha para reintentar." : "");
         }
+      } catch (loadError) {
+        if (live) setPhotoError(errorMessage(loadError));
       }
     }
-    void loadPhoto();
-    const timer = window.setInterval(() => void loadPhoto(), 120000);
+    void loadPhotos();
+    const timer = window.setInterval(() => void loadPhotos(), 120000);
     return () => {
       live = false;
       clearInterval(timer);
     };
-  }, [job?.photo_path, demo]);
+    // The paths are represented by a stable string so renewals do not reset selections.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoPathsKey, demo]);
+  function selectPhotos(files: File[]) {
+    const selected = [...photos];
+    const invalid: string[] = [];
+    for (const file of files) {
+      try {
+        validatePhoto(file);
+        const duplicate = selected.some((existing) => existing.name === file.name &&
+          existing.size === file.size && existing.lastModified === file.lastModified && existing.type === file.type);
+        if (!duplicate) selected.push(file);
+      } catch (validationError) {
+        invalid.push(`${file.name}: ${errorMessage(validationError)}`);
+      }
+    }
+    setPhotos(selected);
+    setError(invalid.join(" "));
+    setPhotoError("");
+  }
   async function save(status?: Status) {
     if (busy || !canEdit) return;
     setError("");
@@ -1514,10 +1581,10 @@ function JobEditor({
         throw new Error(
           "Necesitas conexión para guardar. Tus datos siguen aquí.",
         );
-      if (status === "installed" && !photo) {
+      if (status === "installed" && !photos.length && !photoPaths.length) {
         photoSectionRef.current?.scrollIntoView({ block: "nearest" });
         document.getElementById("job-photo")?.focus({ preventScroll: true });
-        throw new Error("Te falta hacer o añadir la foto del felpudo colocado. El trabajo sigue Cortado.");
+        throw new Error("Te falta hacer o añadir al menos una foto del felpudo colocado. El trabajo sigue Cortado.");
       }
       await onSave(
         {
@@ -1532,7 +1599,7 @@ function JobEditor({
           notes: combineJobNotes(values.notes, preparedNotes),
         },
         status,
-        photo,
+        photos,
       );
     } catch (saveError) {
       setError(errorMessage(saveError));
@@ -1593,21 +1660,23 @@ function JobEditor({
             Tu reserva ha caducado. Tus datos siguen visibles, pero debes cerrar
             y volver a abrir el trabajo antes de guardar.
           </div>
-        ) : state.readonly && job?.status !== "installed" ? (
+        ) : state.readonly ? (
           <div className="readonly-notice">
             <LockKeyhole size={18} />
             <span>
               {lock
                 ? `${person(lock.user_id)} está editando este trabajo.`
                 : "Este trabajo está reservado por otra persona."}{" "}
-              Puedes consultar sus datos. Cierra y vuelve a abrir para editar
+              Puedes consultar sus datos y fotos. Cierra y vuelve a abrir para editar
               cuando esté libre.
             </span>
           </div>
         ) : canEdit && job ? (
           <div className="edit-reserved">
             <ShieldCheck size={16} />
-            Trabajo reservado para ti mientras lo editas.
+            {job.status === "installed"
+              ? "Trabajo reservado para ti mientras añades fotos."
+              : "Trabajo reservado para ti mientras lo editas."}
           </div>
         ) : null}
         <form
@@ -1637,7 +1706,7 @@ function JobEditor({
               onChange={(event) =>
                 setValues({ ...values, responsible_name: event.target.value })
               }
-              disabled={!canEdit}
+              disabled={!detailsEditable}
             >
               <option value="">Sin asignar</option>
               {values.responsible_name &&
@@ -1737,7 +1806,7 @@ function JobEditor({
               placeholder="Solo lo necesario: datos pendientes, sentido de la fibra…"
               rows={3}
               maxLength={editableNotesLimit(preparedNotes)}
-              disabled={!canEdit}
+              disabled={!detailsEditable}
             />
           </label>
           {preparedNotes.archive && (
@@ -1748,90 +1817,81 @@ function JobEditor({
             </details>
           )}
         </form>
-        {job?.status === "cut" && canEdit && (
+        {job && (job.status === "installed" || (job.status === "cut" && canEdit)) && (
           <section className="photo-section" ref={photoSectionRef}>
             <h3>
-              <Camera size={20} />
-              Foto del trabajo colocado <span>*</span>
+              {job.status === "installed" ? <CheckCheck size={20} /> : <Camera size={20} />}
+              {job.status === "installed" ? "Felpudo colocado" : "Fotos del trabajo colocado"}
+              {job.status === "cut" && <span>*</span>}
             </h3>
-            <p>
-              Hazla cuando el felpudo esté en su sitio. Se guardará al pulsar
-              Marcar colocado.
-            </p>
-            <label
-              className={`photo-picker ${photo ? "has-photo" : ""}`}
-              htmlFor="job-photo"
-            >
-              {preview ? (
-                <img
-                  src={preview}
-                  alt="Foto seleccionada del felpudo colocado"
-                  onError={() =>
-                    setPhotoError(
-                      "Este navegador no puede previsualizar este formato. La foto se puede guardar.",
-                    )
-                  }
-                />
-              ) : (
-                <Camera size={30} />
-              )}
-              <span>
-                {photo ? "Cambiar foto" : "Hacer foto o elegir de la galería"}
-              </span>
-              <small>JPG, PNG, WebP o HEIC · Máximo 10 MB</small>
-            </label>
-            <input
-              id="job-photo"
-              type="file"
-              className="sr-only"
-              accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (!file) return;
-                try {
-                  validatePhoto(file);
-                  setPhoto(file);
-                  setError("");
-                  setPhotoError("");
-                } catch (photoValidation) {
-                  setError(errorMessage(photoValidation));
-                  event.target.value = "";
-                }
-              }}
-            />
-            {photo && (
-              <p className="selected-file">
-                <Check size={15} />
-                {photo.name}
+            {job.installed_at ? (
+              <p>Colocado el {dateTime(job.installed_at)} · {photoPaths.length} {photoPaths.length === 1 ? "foto guardada" : "fotos guardadas"}.</p>
+            ) : (
+              <p>
+                Añade al menos una foto cuando el felpudo esté en su sitio. Las fotos
+                adicionales son opcionales y se guardarán al pulsar Marcar colocado.
               </p>
             )}
-          </section>
-        )}
-        {job?.status === "installed" && (
-          <section className="photo-section">
-            <h3>
-              <CheckCheck size={20} />
-              Felpudo colocado
-            </h3>
-            {job.installed_at && (
-              <p>Colocado el {dateTime(job.installed_at)}</p>
+            {!!savedPhotos.length && (
+              <div className="photo-grid saved-photo-grid">
+                {savedPhotos.map(({ path, url }, index) => (
+                  <a href={url} target="_blank" rel="noreferrer" key={path}>
+                    <img className="saved-photo" src={url}
+                      alt={`Felpudo colocado en ${job.store_name}, foto ${index + 1}`}
+                      onError={() => setPhotoError("No se puede mostrar alguna imagen en este navegador. Pulsa la foto para abrirla.")}
+                    />
+                    <small>Abrir foto {index + 1}</small>
+                  </a>
+                ))}
+              </div>
             )}
-            {savedPhoto ? (
-              <a href={savedPhoto} target="_blank" rel="noreferrer">
-                <img
-                  className="saved-photo"
-                  src={savedPhoto}
-                  alt={`Felpudo colocado en ${job.store_name}`}
-                  onError={() =>
-                    setPhotoError(
-                      "No se puede mostrar la imagen en este navegador. Pulsa para abrir la foto.",
-                    )
-                  }
+            {!!photoPaths.length && !savedPhotos.length && !photoError && <p>Cargando fotos…</p>}
+            {canEdit && (
+              <>
+                {job.status === "installed" && <p>Puedes añadir más fotos. Las fotos guardadas se conservan.</p>}
+                <div className={`photo-actions ${busy ? "is-busy" : ""}`}>
+                  <label className="photo-picker" htmlFor="job-photo">
+                    <Plus size={25} /><span>Elegir de la galería</span><small>Puedes seleccionar varias</small>
+                  </label>
+                  <label className="photo-picker" htmlFor="job-camera">
+                    <Camera size={25} /><span>Hacer una foto</span><small>Añade otra cuando quieras</small>
+                  </label>
+                </div>
+                <p className="photo-formats">JPG, PNG, WebP o HEIC · Máximo 10 MB por foto</p>
+                <input id="job-photo" type="file" className="sr-only"
+                  accept="image/jpeg,image/png,image/webp,image/heic,image/heif" multiple disabled={busy}
+                  onChange={(event) => {
+                    selectPhotos(Array.from(event.target.files || []));
+                    event.target.value = "";
+                  }}
                 />
-                <small>Abrir foto</small>
-              </a>
-            ) : (
-              !photoError && <p>Cargando foto…</p>
+                <input id="job-camera" type="file" className="sr-only"
+                  accept="image/jpeg,image/png,image/webp,image/heic,image/heif" capture="environment" disabled={busy}
+                  onChange={(event) => {
+                    selectPhotos(Array.from(event.target.files || []));
+                    event.target.value = "";
+                  }}
+                />
+                {!!photos.length && (
+                  <>
+                    <p className="selected-file" role="status"><Check size={15} />{photos.length} {photos.length === 1 ? "foto preparada" : "fotos preparadas"} para guardar</p>
+                    <div className="photo-grid selected-photo-grid">
+                      {photos.map((photo, index) => (
+                        <figure key={`${photo.name}-${photo.size}-${photo.lastModified}`}>
+                          <img src={previews[index]} alt={`Foto seleccionada ${index + 1}: ${photo.name}`}
+                            onError={() => setPhotoError("Este navegador no puede previsualizar algún formato. La foto se puede guardar.")}
+                          />
+                          <button type="button" className="remove-photo" disabled={busy}
+                            aria-label={`Quitar foto ${index + 1}: ${photo.name}`}
+                            onClick={() => setPhotos((selected) => selected.filter((_, position) => position !== index))}
+                          ><X size={18} /></button>
+                          <figcaption>{index + 1}. {photo.name}</figcaption>
+                        </figure>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </>
             )}
           </section>
         )}
@@ -1867,7 +1927,7 @@ function JobEditor({
       )}
       <div className="dialog-footer">
         {!canEdit ? (
-          <button className="secondary" onClick={() => void onClose()}>
+          <button className="secondary" onClick={() => void onClose()} disabled={busy}>
             Cerrar ficha
           </button>
         ) : (
@@ -1877,21 +1937,21 @@ function JobEditor({
               onClick={() => void onClose()}
               disabled={busy}
             >
-              Cancelar
+              {job?.status === "installed" && !photos.length ? "Cerrar ficha" : "Cancelar"}
             </button>
-            {job && (
+            {job && job.status !== "installed" && (
               <button
                 className="secondary"
                 type="submit"
                 form="job-form"
-                disabled={busy || !online || !!photo}
+                disabled={busy || !online || !!photos.length}
               >
                 Guardar cambios
               </button>
             )}
             <button
               className="primary"
-              disabled={busy || !online}
+              disabled={busy || !online || (job?.status === "installed" && !photos.length)}
               onClick={() => void save(next || undefined)}
             >
               {busy ? (
@@ -1901,7 +1961,7 @@ function JobEditor({
                 </>
               ) : (
                 <>
-                  {job
+                  {job?.status === "installed" ? "Guardar fotos" : job
                     ? STATUSES.find((item) => item.id === job.status)?.action
                     : "Guardar medición"}
                   {next === "installed" ? (
