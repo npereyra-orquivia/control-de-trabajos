@@ -2250,6 +2250,9 @@ h1 > span {
   .filter-field {
     max-width: none;
   }
+  .filter-responsible {
+    grid-column: 1 / -1;
+  }
   .filter-field select {
     font-size: 16px;
     padding-left: 10px;

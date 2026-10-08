@@ -40,7 +40,7 @@ import {
 } from "./types";
 import { supabase } from "./lib/supabase";
 import { resolveLoginEmail } from "./lib/login.mjs";
-import { getMaterialOptions, matchesJob } from "./lib/filters.mjs";
+import { getMaterialOptions, getResponsibleOptions, matchesJob } from "./lib/filters.mjs";
 import { combineJobNotes, editableNotesLimit, prepareJobNotes } from "./lib/notes.mjs";
 import {
   acquireDemo,
@@ -154,6 +154,7 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [filter, setFilter] = useState<Status | "all">("all");
   const [materialFilter, setMaterialFilter] = useState("all");
+  const [responsibleFilter, setResponsibleFilter] = useState("all");
   const [thicknessFilter, setThicknessFilter] = useState<"all" | "17" | "20" | "unknown">("all");
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState<"jobs" | "team" | "help">("jobs");
@@ -480,18 +481,24 @@ export default function App() {
     status: filter,
     material: materialFilter,
     thickness: thicknessFilter,
+    responsible: responsibleFilter,
     search,
   }));
   const materialOptions = getMaterialOptions(jobs, MATERIALS);
+  const responsibleOptions = getResponsibleOptions(jobs, profiles);
+  if (responsibleFilter !== "all" && !responsibleOptions.some((item) => item.value === responsibleFilter)) {
+    responsibleOptions.push({ value: responsibleFilter, label: responsibleFilter.replace(/^responsible:/, "") });
+  }
   if (materialFilter !== "all" && !materialOptions.some((item) => item.value === materialFilter)) {
     materialOptions.push({ value: materialFilter, label: materialFilter.replace(/^other:/, "") });
   }
-  const filtersActive = !!search.trim() || filter !== "all" || materialFilter !== "all" || thicknessFilter !== "all";
+  const filtersActive = !!search.trim() || filter !== "all" || materialFilter !== "all" || thicknessFilter !== "all" || responsibleFilter !== "all";
   function clearFilters() {
     setSearch("");
     setFilter("all");
     setMaterialFilter("all");
     setThicknessFilter("all");
+    setResponsibleFilter("all");
   }
   const pending = jobs.filter((job) => job.status !== "installed").length;
   const person = (id: string) =>
@@ -717,6 +724,22 @@ export default function App() {
                       <option value="20">20 mm</option>
                       <option value="17">17 mm</option>
                       <option value="unknown">No sé / notas</option>
+                    </select>
+                    <ChevronDown size={16} />
+                  </div>
+                </label>
+                <label className="filter-field filter-responsible">
+                  <span>Responsable</span>
+                  <div className="filter-select">
+                    <select
+                      aria-label="Filtrar por responsable"
+                      value={responsibleFilter}
+                      onChange={(event) => setResponsibleFilter(event.target.value)}
+                    >
+                      <option value="all">Todos</option>
+                      {responsibleOptions.map((item) => (
+                        <option key={item.value} value={item.value}>{item.label}</option>
+                      ))}
                     </select>
                     <ChevronDown size={16} />
                   </div>
