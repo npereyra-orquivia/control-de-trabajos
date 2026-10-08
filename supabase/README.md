@@ -10,6 +10,8 @@ Para actualizar el flujo a **Medido → Cortado → Colocado** y garantizar una 
 
 Para admitir **varias fotos por trabajo**, ejecuta después [`migrations/20261008_multiple_photos.sql`](migrations/20261008_multiple_photos.sql). Conserva las fotos existentes y las convierte en una lista, sin cambiar estados, fechas, autores, versiones ni bloqueos. Se puede volver a ejecutar y sigue exigiendo **al menos una foto** para colocar. Ejecuta esta migración después de las anteriores, porque actualiza las funciones de guardado y validación.
 
+Para separar **Felpudos / Deshumidificadores** y habilitar **revisiones y correcciones**, ejecuta al final [`migrations/20261009_job_types_and_reviews.sql`](migrations/20261009_job_types_and_reviews.sql). Es reejecutable y conserva trabajos, fotos, fechas, versiones y bloqueos. Los registros existentes reciben `job_kind = 'mat'` y revisión pendiente. No convierte nombres ni deduce cantidades: la clasificación de registros existentes debe hacerse después de comprobar sus datos. Crea `job_events`, compartido por los mismos cinco usuarios activos.
+
 1. Abre el proyecto de Supabase y entra en **SQL Editor**.
 2. Copia y ejecuta todo el contenido de [`schema.sql`](schema.sql). Crea tablas, reglas de acceso, el bucket privado `job-photos` y la suscripción Realtime. Se puede ejecutar otra vez sin borrar los trabajos. Si ya existen más de cinco cuentas sin perfil, el proceso se cancela: utiliza un proyecto dedicado.
 3. En **Authentication → Sign In / Providers**, habilita **Allow new users to sign up** y el proveedor de correo y contraseña. Mantén desactivado **Allow anonymous sign-ins**. El formulario permite que los trabajadores creen sus propias cuentas.
@@ -56,19 +58,41 @@ Esto libera una de las cinco plazas para otra cuenta. Reactivar un perfil tambi�
 | Campo | Uso |
 | --- | --- |
 | `store_name`, `address` | Tienda y dirección antigua. La dirección se conserva en la base de datos y se oculta en la aplicación. |
-| `width_cm`, `length_cm` | Ancho y largo positivos en cm, con hasta dos decimales. |
+| `job_kind` | `mat` (Felpudos) o `dehumidifier` (Deshumidificadores). Se elige al crear y no se modifica en la RPC normal. |
+| `width_cm`, `length_cm` | Medidas positivas en cm, con hasta dos decimales. Ambas `null` para aparatos y felpudos pendientes de medir; no se admite una sola medida. |
 | `thickness_mm` | Espesor: `17` o `20` mm; `null` significa **No sé**. No se guarda como cero. |
-| `quantity` | Campo interno fijo en `1`: cada tarea representa un felpudo. |
+| `quantity` | Felpudos: fijo en `1`, cada tarea es una pieza. Aparatos: entero positivo de unidades que necesita el local. |
 | `material` | Las nuevas mediciones ofrecen **Coco**, **Metálico** y **No hay**. El campo de texto conserva los materiales de trabajos anteriores. |
 | `notes` | Detalles opcionales, guardados como texto vacío si no hay valor. |
-| `status` | `measured` (Medido), `cut` (Cortado), `installed` (Colocado). |
+| `status` | Felpudos: `pending_measurement` (Por medir), `measured` (Medido), `cut` (Cortado), `installed` (Colocado); un recorte usa `pending_adjustment` (Por ajustar). Aparatos: `pending_installation` (Por colocar) → `installed`. |
+| `review_status`, `rework_kind` | Revisión: `pending`, `approved` o `needs_adjustment`; corrección: `trim`, `add`, `replace`, o `null` antes de una corrección. |
+| `revision_no`, `review_notes`, `reviewed_at`, `reviewed_by` | Ciclo de corrección desde `0`, indicaciones y auditoría de revisión. Solo los cambia la RPC de revisión. |
 | `photo_paths` | Lista ordenada de rutas de todas las fotos en el bucket privado; no se guardan URLs temporales. |
 | `photo_path` | Primera ruta de `photo_paths`, mantenida para clientes antiguos. |
 | `version` | Versión que aumenta al guardar; evita sobrescribir datos antiguos. |
 | `measured_by`, `cut_by`, `installed_by` | Trabajador que registró la medida actual y cada paso, sin atribuirlos al creador por defecto. `cutting_by` y `cutting_at` se mantienen como columnas antiguas y no se usan en el flujo nuevo. |
 | `created_by`, `updated_by`, fechas | Auditoría que fija la base de datos. |
 
-Todos los miembros activos pueden crear, consultar y modificar trabajos. Los borrados se gestionan desde el SQL Editor, para que una eliminación directa desde el navegador no invalide la edición de otro trabajador. El flujo es `measured` → `cut` → `installed`; no permite saltarse pasos. Para colocar hay que partir de `cut` y subir al menos una foto; las fotos adicionales son opcionales. Si falta, el servidor devuelve **«Te falta hacer la foto del felpudo colocado»**. Un trabajo colocado no vuelve a una fase anterior. Puede recibir fotos adicionales con el mismo bloqueo y control de versión, sin alterar la fecha ni el autor de su colocación. Se pueden corregir las medidas y el espesor y marcar cortado en el mismo guardado, desde `measured` a `cut`. Para cambiar medidas, espesor o material después de cortar, primero devuelve el trabajo a `measured`; así se invalidan las fechas y autores de los pasos siguientes.
+Todos los miembros activos pueden crear, consultar y modificar trabajos. Los borrados se gestionan desde el SQL Editor, para que una eliminación directa desde el navegador no invalide la edición de otro trabajador. El flujo normal de felpudos es `measured` → `cut` → `installed`; si falta medir, se crea con `pending_measurement` y ambas medidas `null`. Para pasar a medido se exigen ambas medidas positivas. Los aparatos se crean con `job_kind: 'dehumidifier'`, `status: 'pending_installation'`, cantidad positiva, medidas y espesor `null`, material vacío. Pasan directamente a `installed`; no tienen corte ni fecha/autor de medición. Su cantidad puede corregirse mientras estén pendientes.
+
+Toda colocación exige al menos una foto subida; las adicionales son opcionales. Si falta, el servidor devuelve **«Te falta hacer la foto del trabajo colocado»**. Un colocado solo se reabre mediante su revisión. Puede recibir fotos adicionales con el mismo bloqueo y versión, sin alterar fecha ni autor de colocación. Se pueden corregir medidas y espesor y marcar cortado en el mismo guardado desde `measured` a `cut`. Para cambiar medidas, espesor o material después de cortar, primero devuelve el felpudo a `measured`; se invalidan las fechas y autores de los pasos siguientes.
+
+## Revisar y corregir felpudos
+
+`review_job(p_job_id, p_token, p_expected_version, p_action, p_notes)` devuelve el trabajo actualizado. Exige usuario activo, bloqueo vigente, versión actual y un felpudo colocado. Todos los integrantes activos pueden inspeccionar.
+
+| Acción | Resultado |
+| --- | --- |
+| `approve` | Revisión aprobada. Conserva fase, medidas, fotos y fecha/autor de colocación. Nota opcional. |
+| `trim` | Abre **Por ajustar**, conserva medidas y auditoría de medición. Al terminar pasa directamente a colocado con foto nueva. |
+| `add` | Abre **Por medir** para medir la pieza que falta, cortarla y colocarla. No deduce las medidas de la pieza anterior. |
+| `replace` | Abre **Por medir** para volver a medir, cortar y sustituir el felpudo completo. |
+
+Las correcciones requieren instrucciones (máximo 3000 caracteres), incrementan `revision_no` y dejan revisión **Requiere corrección**. Conservan material, espesor, responsable y notas generales. `add` y `replace` borran medidas y auditoría de medición actuales; las anteriores siguen en el historial. Toda reapertura borra las fotos actuales y fechas/autores de corte y colocación. El recorte conserva la medición original. Al colocar una corrección se registra la nueva fecha/autor y vuelve a revisión pendiente.
+
+Antes de cambiar nada, `job_events` guarda en `snapshot` una copia completa del trabajo anterior, incluidas todas sus fotos y auditoría. `review_approved` registra la aprobación; `rework_started`, la apertura de un ciclo. Al reabrir, el evento tiene el número del ciclo nuevo y `snapshot.revision_no` el anterior. Se consulta con `select('*').eq('job_id', job.id).order('created_at', { ascending: false })`. Los activos pueden leer; los clientes no pueden insertar, modificar ni borrar eventos, ni escribir campos de revisión por `update_job`. El permiso interno de reapertura está en una tabla privada limitado a transacción, autor y versión; no usa una variable que el navegador pueda falsificar.
+
+Las fotos del historial quedan visibles y protegidas contra borrado. No se pueden adjuntar de nuevo como prueba de una corrección: hay que subir fotos con rutas nuevas. Para mostrarlas se firman las rutas de `snapshot.photo_paths`, igual que las actuales. Añadir fotos actuales tras colocar conserva el historial existente.
 
 Al modificar medidas, espesor o material mientras el trabajo está medido, se actualizan `measured_at` y `measured_by`. Cada cambio de fase registra su fecha y su autor. El cliente no puede escribir estos datos de auditoría. Si el esquema se actualiza sobre trabajos antiguos que no tenían autores por etapa, esos autores quedan como `null`, sin inventar su identidad. El nuevo `thickness_mm` también queda como `null` en trabajos antiguos cuyo espesor no estaba registrado; no se deduce del texto del material.
 
@@ -108,7 +132,7 @@ try {
 }
 ```
 
-La extensión y el `contentType` deben corresponder al archivo real: JPEG, PNG, WebP, HEIC o HEIF. El límite del bucket es **10 MB por foto**. La subida exige un bloqueo vigente del trabajo a nombre del usuario. El servidor verifica que **todos** los objetos existen, pertenecen a la carpeta del trabajo y tienen rutas distintas antes de guardar. Las políticas no permiten sobrescribir fotos ni borrar ningún objeto mientras aparezca en la lista del trabajo; el borrado y el guardado se serializan para evitar una foto perdida por concurrencia. El guardado de la lista es atómico: una ruta inválida impide todo el cambio, incluida la colocación.
+La extensión y el `contentType` deben corresponder al archivo real: JPEG, PNG, WebP, HEIC o HEIF. El límite del bucket es **10 MB por foto**. La subida exige un bloqueo vigente del trabajo a nombre del usuario. El servidor verifica que **todos** los objetos existen, pertenecen a la carpeta del trabajo y tienen rutas distintas antes de guardar. Las políticas no permiten sobrescribir fotos ni borrar ningún objeto mientras aparezca en la lista del trabajo o en una copia histórica; el borrado, la revisión y el guardado se serializan para evitar una foto perdida por concurrencia. El guardado de la lista es atómico: una ruta inválida impide todo el cambio, incluida la colocación.
 
 La RPC sigue aceptando `photo_path` de clientes antiguos: cambia la primera foto y conserva las adicionales. Las nuevas pantallas envían `photo_paths`, que representa la lista completa, y conservan las fotos ya guardadas al añadir más.
 
@@ -124,11 +148,18 @@ Para verlas, usa `createSignedUrl(path, 300)` por cada ruta o `createSignedUrls(
 - Dos usuarios abren el mismo trabajo: solo uno obtiene el bloqueo. Dos pestañas de la misma cuenta con tokens diferentes tampoco pueden editarlo a la vez.
 - Bloqueo caducado, token ajeno, versión antigua o actualización/borrado directo por REST: se rechaza.
 - Espesores distintos de 17/20 mm y del valor desconocido `null`: se rechazan.
-- La fase retirada `cutting` y cantidades distintas de `1`: se rechazan.
+- La fase retirada `cutting`, cantidades de felpudo distintas de `1` y cantidades de aparatos no positivas: se rechazan.
+- Aparatos: colocación directa con foto; no admiten fases de medición/corte ni medidas, espesor o material de felpudo.
+- Felpudos pendientes de medir: ambos lados vacíos; pasar a medido exige ambos positivos.
 - Cambiar medidas o espesor mientras el trabajo sigue cortado o colocado: se rechaza.
 - Colocado sin fotos, o con cualquier ruta inexistente, repetida o de otro trabajo: se rechaza sin guardar parcialmente.
 - Añadir varias fotos a un trabajo colocado: conserva las anteriores y la fecha y el autor originales de colocación.
-- Borrar o sobrescribir cualquiera de las fotos referenciadas desde el navegador: se rechaza.
-- Repetir la migración y el esquema completo: conserva listas de fotos, datos del trabajo y bloqueos.
+- Revisar con bloqueo incorrecto, versión antigua o cuenta inactiva: se rechaza.
+- Aprobar conserva fotos, fase y auditoría; archiva una copia previa.
+- Recortar reabre **Por ajustar** sin cambiar medidas. Añadir/sustituir reabre **Por medir**. Las correcciones exigen instrucciones y fotos nuevas al colocar.
+- Reutilizar la foto de una colocación anterior como prueba de corrección: se rechaza.
+- Escribir o borrar historial o campos de revisión desde la API normal: se rechaza.
+- Borrar o sobrescribir fotos actuales o históricas desde el navegador: se rechaza.
+- Repetir migración y esquema completo: conserva fotos, historial, revisiones, cantidades de aparatos y bloqueos.
 
 Documentación oficial: [perfiles y triggers de Auth](https://supabase.com/docs/guides/auth/managing-user-data), [configuración de altas](https://supabase.com/docs/guides/auth/general-configuration), [URLs de redirección](https://supabase.com/docs/guides/auth/redirect-urls), [políticas de Storage](https://supabase.com/docs/guides/storage/security/access-control) y [buckets privados](https://supabase.com/docs/guides/storage/buckets/fundamentals).
