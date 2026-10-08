@@ -44,10 +44,45 @@ export function getMaterialOptions(jobs, baseOptions) {
   ];
 }
 
+export function responsibleKey(name) {
+  const value = normalized(name);
+  // Keep names separate from the special filter values, even if a saved
+  // responsible happens to be called "All" or "Unassigned".
+  return value ? `responsible:${value}` : "unassigned";
+}
+
+export function getResponsibleOptions(jobs, profiles) {
+  const names = new Map();
+  const addName = (name) => {
+    const key = responsibleKey(name);
+    if (key === "unassigned" || names.has(key)) return;
+    names.set(key, {
+      value: key,
+      label: name.trim().replace(/\s+/g, " "),
+    });
+  };
+  // Prefer the team's spelling, without losing saved names from older jobs.
+  for (const profile of profiles) {
+    if (profile.active) addName(profile.display_name);
+  }
+  for (const job of jobs) addName(job.responsible_name);
+  return [
+    { value: "unassigned", label: "Sin asignar" },
+    ...[...names.values()].sort((a, b) =>
+      a.label.localeCompare(b.label, "es", { sensitivity: "base" }),
+    ),
+  ];
+}
+
 export function matchesJob(job, filters) {
   if (filters.status !== "all" && job.status !== filters.status) return false;
   if (filters.material !== "all" && materialKey(job.material) !== filters.material)
     return false;
+  if (
+    filters.responsible &&
+    filters.responsible !== "all" &&
+    responsibleKey(job.responsible_name) !== filters.responsible
+  ) return false;
   if (filters.thickness === "unknown") {
     if (job.thickness_mm != null) return false;
   } else if (filters.thickness !== "all") {
