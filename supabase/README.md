@@ -8,6 +8,8 @@ Para actualizar el proyecto ya instalado con el nuevo espesor, ejecuta solo [`mi
 
 Para actualizar el flujo a **Medido → Cortado → Colocado** y garantizar una tarea por felpudo, ejecuta [`migrations/20261008_three_stages_one_mat.sql`](migrations/20261008_three_stages_one_mat.sql) después de las migraciones de espesor y responsable. Es una transacción reejecutable: elimina la fase intermedia, separa cantidades mayores de uno en tareas individuales y conserva medidas, notas, responsables y permisos. Si hubiera una tarea ya colocada con varias unidades, la migración se cancela para que se adjunte primero una foto individual a cada felpudo.
 
+Para admitir **varias fotos por trabajo**, ejecuta después [`migrations/20261008_multiple_photos.sql`](migrations/20261008_multiple_photos.sql). Conserva las fotos existentes y las convierte en una lista, sin cambiar estados, fechas, autores, versiones ni bloqueos. Se puede volver a ejecutar y sigue exigiendo **al menos una foto** para colocar. Ejecuta esta migración después de las anteriores, porque actualiza las funciones de guardado y validación.
+
 1. Abre el proyecto de Supabase y entra en **SQL Editor**.
 2. Copia y ejecuta todo el contenido de [`schema.sql`](schema.sql). Crea tablas, reglas de acceso, el bucket privado `job-photos` y la suscripción Realtime. Se puede ejecutar otra vez sin borrar los trabajos. Si ya existen más de cinco cuentas sin perfil, el proceso se cancela: utiliza un proyecto dedicado.
 3. En **Authentication → Sign In / Providers**, habilita **Allow new users to sign up** y el proveedor de correo y contraseña. Mantén desactivado **Allow anonymous sign-ins**. El formulario permite que los trabajadores creen sus propias cuentas.
@@ -60,12 +62,13 @@ Esto libera una de las cinco plazas para otra cuenta. Reactivar un perfil tambi�
 | `material` | Las nuevas mediciones ofrecen **Coco**, **Metálico** y **No hay**. El campo de texto conserva los materiales de trabajos anteriores. |
 | `notes` | Detalles opcionales, guardados como texto vacío si no hay valor. |
 | `status` | `measured` (Medido), `cut` (Cortado), `installed` (Colocado). |
-| `photo_path` | Ruta de la foto en el bucket privado; no se guarda una URL temporal. |
+| `photo_paths` | Lista ordenada de rutas de todas las fotos en el bucket privado; no se guardan URLs temporales. |
+| `photo_path` | Primera ruta de `photo_paths`, mantenida para clientes antiguos. |
 | `version` | Versión que aumenta al guardar; evita sobrescribir datos antiguos. |
 | `measured_by`, `cut_by`, `installed_by` | Trabajador que registró la medida actual y cada paso, sin atribuirlos al creador por defecto. `cutting_by` y `cutting_at` se mantienen como columnas antiguas y no se usan en el flujo nuevo. |
 | `created_by`, `updated_by`, fechas | Auditoría que fija la base de datos. |
 
-Todos los miembros activos pueden crear, consultar y modificar trabajos. Los borrados se gestionan desde el SQL Editor, para que una eliminación directa desde el navegador no invalide la edición de otro trabajador. El flujo es `measured` → `cut` → `installed`; no permite saltarse pasos. Para colocar hay que partir de `cut` y subir una foto. Si falta, el servidor devuelve **«Te falta hacer la foto del felpudo colocado»**. Un trabajo colocado no vuelve a una fase anterior. Se pueden corregir las medidas y el espesor y marcar cortado en el mismo guardado, desde `measured` a `cut`. Para cambiar medidas, espesor o material después de cortar, primero devuelve el trabajo a `measured`; así se invalidan las fechas y autores de los pasos siguientes.
+Todos los miembros activos pueden crear, consultar y modificar trabajos. Los borrados se gestionan desde el SQL Editor, para que una eliminación directa desde el navegador no invalide la edición de otro trabajador. El flujo es `measured` → `cut` → `installed`; no permite saltarse pasos. Para colocar hay que partir de `cut` y subir al menos una foto; las fotos adicionales son opcionales. Si falta, el servidor devuelve **«Te falta hacer la foto del felpudo colocado»**. Un trabajo colocado no vuelve a una fase anterior. Puede recibir fotos adicionales con el mismo bloqueo y control de versión, sin alterar la fecha ni el autor de su colocación. Se pueden corregir las medidas y el espesor y marcar cortado en el mismo guardado, desde `measured` a `cut`. Para cambiar medidas, espesor o material después de cortar, primero devuelve el trabajo a `measured`; así se invalidan las fechas y autores de los pasos siguientes.
 
 Al modificar medidas, espesor o material mientras el trabajo está medido, se actualizan `measured_at` y `measured_by`. Cada cambio de fase registra su fecha y su autor. El cliente no puede escribir estos datos de auditoría. Si el esquema se actualiza sobre trabajos antiguos que no tenían autores por etapa, esos autores quedan como `null`, sin inventar su identidad. El nuevo `thickness_mm` también queda como `null` en trabajos antiguos cuyo espesor no estaba registrado; no se deduce del texto del material.
 
@@ -75,31 +78,41 @@ Los cambios se guardan únicamente con `update_job(p_job_id, p_token, p_expected
 
 Para mostrar quién está editando, consulta `job_locks` seleccionando expresamente `job_id,user_id,expires_at`. El token está oculto para el navegador; `select('*')` en esta tabla se rechaza. Relaciona `user_id` con los nombres de `profiles` y descarta los bloqueos cuya fecha ya haya caducado.
 
-Sube cada foto con un nombre nuevo y `upsert: false`, de esta forma:
+Sube cada foto con un nombre nuevo y `upsert: false`. Después envía la lista completa de rutas, conservando las que ya tenía el trabajo. Ejemplo para fotos JPEG:
 
 ```js
-const path = `${job.id}/${crypto.randomUUID()}.jpg`
-const { error: uploadError } = await supabase.storage
-  .from('job-photos')
-  .upload(path, photoFile, { contentType: 'image/jpeg', upsert: false })
-if (uploadError) throw uploadError
-
-const { data: savedJob, error: saveError } = await supabase.rpc('update_job', {
-  p_job_id: job.id,
-  p_token: editingToken,
-  p_expected_version: job.version,
-  p_patch: { status: 'installed', photo_path: path },
-})
-if (saveError) {
-  // Esta foto todavía no está referenciada y puede limpiarse.
-  await supabase.storage.from('job-photos').remove([path])
-  throw saveError
+const uploaded = []
+const existing = job.photo_paths?.length
+  ? job.photo_paths
+  : job.photo_path ? [job.photo_path] : []
+try {
+  for (const photoFile of photos) {
+    const path = `${job.id}/${crypto.randomUUID()}.jpg`
+    const { error } = await supabase.storage
+      .from('job-photos')
+      .upload(path, photoFile, { contentType: 'image/jpeg', upsert: false })
+    if (error) throw error
+    uploaded.push(path)
+  }
+  const { data: savedJob, error } = await supabase.rpc('update_job', {
+    p_job_id: job.id,
+    p_token: editingToken,
+    p_expected_version: job.version,
+    p_patch: { status: 'installed', photo_paths: [...existing, ...uploaded] },
+  })
+  if (error) throw error
+} catch (error) {
+  // Solo los objetos nuevos que no hayan quedado adjuntos se pueden limpiar.
+  if (uploaded.length) await supabase.storage.from('job-photos').remove(uploaded)
+  throw error
 }
 ```
 
-La extensión y el `contentType` deben corresponder al archivo real: JPEG, PNG, WebP, HEIC o HEIF. El límite del bucket es **10 MB** por foto. La subida exige un bloqueo vigente del trabajo a nombre del usuario. El servidor verifica que el objeto existe antes de aceptar la ruta y obliga a adjuntar foto para `installed`. Las políticas no permiten sobrescribir fotos ni borrar un objeto mientras un trabajo lo referencia; el borrado y el guardado se serializan para evitar una foto perdida por concurrencia. Para sustituir una foto, primero sube otra con nombre nuevo y actualiza la ruta del trabajo mediante la misma RPC.
+La extensión y el `contentType` deben corresponder al archivo real: JPEG, PNG, WebP, HEIC o HEIF. El límite del bucket es **10 MB por foto**. La subida exige un bloqueo vigente del trabajo a nombre del usuario. El servidor verifica que **todos** los objetos existen, pertenecen a la carpeta del trabajo y tienen rutas distintas antes de guardar. Las políticas no permiten sobrescribir fotos ni borrar ningún objeto mientras aparezca en la lista del trabajo; el borrado y el guardado se serializan para evitar una foto perdida por concurrencia. El guardado de la lista es atómico: una ruta inválida impide todo el cambio, incluida la colocación.
 
-Para verla, usa `createSignedUrl(photo_path, 300)` al abrir el trabajo; esa URL dura cinco minutos. No uses `getPublicUrl`, porque el bucket es privado. Evita guardar URLs firmadas en la tabla o en cachés persistentes.
+La RPC sigue aceptando `photo_path` de clientes antiguos: cambia la primera foto y conserva las adicionales. Las nuevas pantallas envían `photo_paths`, que representa la lista completa, y conservan las fotos ya guardadas al añadir más.
+
+Para verlas, usa `createSignedUrl(path, 300)` por cada ruta o `createSignedUrls(photo_paths, 300)` al abrir el trabajo; esas URLs duran cinco minutos. No uses `getPublicUrl`, porque el bucket es privado. Evita guardar URLs firmadas en la tabla o en cachés persistentes.
 
 ## Comprobación
 
@@ -113,7 +126,9 @@ Para verla, usa `createSignedUrl(photo_path, 300)` al abrir el trabajo; esa URL 
 - Espesores distintos de 17/20 mm y del valor desconocido `null`: se rechazan.
 - La fase retirada `cutting` y cantidades distintas de `1`: se rechazan.
 - Cambiar medidas o espesor mientras el trabajo sigue cortado o colocado: se rechaza.
-- Colocado sin foto, o con una ruta inexistente: se rechaza.
-- Borrar o sobrescribir una foto referenciada desde el navegador: se rechaza.
+- Colocado sin fotos, o con cualquier ruta inexistente, repetida o de otro trabajo: se rechaza sin guardar parcialmente.
+- Añadir varias fotos a un trabajo colocado: conserva las anteriores y la fecha y el autor originales de colocación.
+- Borrar o sobrescribir cualquiera de las fotos referenciadas desde el navegador: se rechaza.
+- Repetir la migración y el esquema completo: conserva listas de fotos, datos del trabajo y bloqueos.
 
 Documentación oficial: [perfiles y triggers de Auth](https://supabase.com/docs/guides/auth/managing-user-data), [configuración de altas](https://supabase.com/docs/guides/auth/general-configuration), [URLs de redirección](https://supabase.com/docs/guides/auth/redirect-urls), [políticas de Storage](https://supabase.com/docs/guides/storage/security/access-control) y [buckets privados](https://supabase.com/docs/guides/storage/buckets/fundamentals).

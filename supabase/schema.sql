@@ -152,6 +152,7 @@ create table if not exists public.jobs (
   status text not null default 'measured'
     constraint jobs_status_check check (status in ('measured', 'cut', 'installed')),
   photo_path text,
+  photo_paths text[] not null default '{}'::text[],
   measured_at timestamptz not null default now(),
   cutting_at timestamptz,
   cut_at timestamptz,
@@ -172,7 +173,7 @@ create table if not exists public.jobs (
     )
   ),
   constraint jobs_installed_photo check (
-    status <> 'installed' or (photo_path is not null and installed_at is not null)
+    status <> 'installed' or (cardinality(photo_paths) > 0 and installed_at is not null)
   )
 );
 
@@ -184,6 +185,7 @@ alter table public.jobs add column if not exists cut_by uuid references auth.use
 alter table public.jobs add column if not exists installed_by uuid references auth.users(id) on delete set null;
 alter table public.jobs add column if not exists thickness_mm smallint;
 alter table public.jobs add column if not exists responsible_name text not null default '';
+alter table public.jobs add column if not exists photo_paths text[] not null default '{}'::text[];
 alter table public.jobs alter column responsible_name set default '';
 alter table public.jobs alter column responsible_name set not null;
 do $$
@@ -261,6 +263,46 @@ alter table public.jobs add constraint jobs_quantity_check check (quantity = 1);
 alter table public.jobs drop constraint if exists jobs_status_check;
 alter table public.jobs add constraint jobs_status_check check (status in ('measured', 'cut', 'installed'));
 
+-- La primera foto sigue disponible para clientes antiguos; el array conserva
+-- todas las fotos. No cambia autores, fechas ni versiones al migrar.
+update public.jobs set photo_paths = case
+  when cardinality(coalesce(photo_paths, '{}'::text[])) = 0 and photo_path is not null
+    then array[photo_path]
+  else coalesce(photo_paths, '{}'::text[])
+end
+where photo_paths is null or (cardinality(photo_paths) = 0 and photo_path is not null);
+alter table public.jobs alter column photo_paths set default '{}'::text[];
+alter table public.jobs alter column photo_paths set not null;
+update public.jobs set photo_path = photo_paths[1]
+where photo_path is distinct from photo_paths[1];
+
+create or replace function private.valid_job_photo_paths(p_id uuid, p_paths text[])
+returns boolean
+language sql immutable set search_path = ''
+as $$
+  select p_paths is not null
+    and (pg_catalog.cardinality(p_paths) = 0 or
+      (pg_catalog.array_ndims(p_paths) = 1 and pg_catalog.array_lower(p_paths, 1) = 1))
+    and not exists (
+      select 1 from pg_catalog.unnest(p_paths) as photos(path)
+      where path is null or path <> pg_catalog.btrim(path)
+        or pg_catalog.split_part(path, '/', 1) <> p_id::text
+        or path !~ '^[0-9a-f-]{36}/[0-9a-f-]{36}\.(jpg|jpeg|png|webp|heic|heif)$'
+    )
+    and pg_catalog.cardinality(p_paths) = (
+      select count(distinct path) from pg_catalog.unnest(p_paths) as photos(path)
+    );
+$$;
+
+alter table public.jobs drop constraint if exists jobs_photo_paths_check;
+alter table public.jobs add constraint jobs_photo_paths_check
+  check (private.valid_job_photo_paths(id, photo_paths));
+alter table public.jobs drop constraint if exists jobs_photo_primary_check;
+alter table public.jobs add constraint jobs_photo_primary_check
+  check (photo_path is not distinct from photo_paths[1]);
+alter table public.jobs drop constraint if exists jobs_installed_photo;
+alter table public.jobs add constraint jobs_installed_photo
+  check (status <> 'installed' or (cardinality(photo_paths) > 0 and installed_at is not null));
 
 create index if not exists jobs_status_updated_idx on public.jobs(status, updated_at desc);
 create index if not exists jobs_created_by_idx on public.jobs(created_by);
@@ -286,6 +328,7 @@ as $$
 declare
   actor uuid := auth.uid();
   measurement_changed boolean;
+  attached_path text;
 begin
   new.store_name := btrim(new.store_name);
   new.responsible_name := btrim(new.responsible_name);
@@ -311,6 +354,15 @@ begin
   else
     -- El cliente no puede falsear autor, identificador ni fechas de auditoría.
     new.id := old.id;
+    -- Un cliente antiguo solo conoce photo_path: reemplaza la primera y
+    -- conserva las demás. Un cambio del array completo tiene prioridad.
+    if new.photo_paths is not distinct from old.photo_paths
+      and new.photo_path is distinct from old.photo_path then
+      new.photo_paths := case when new.photo_path is null
+        then coalesce(old.photo_paths[2:], '{}'::text[])
+        else array[new.photo_path] || coalesce(old.photo_paths[2:], '{}'::text[])
+      end;
+    end if;
     new.created_at := old.created_at;
     new.created_by := old.created_by;
     new.measured_at := old.measured_at;
@@ -374,20 +426,28 @@ begin
     end if;
   end if;
 
-  if new.status = 'installed' and new.photo_path is null then
+  if tg_op = 'INSERT' and cardinality(new.photo_paths) = 0 and new.photo_path is not null then
+    new.photo_paths := array[new.photo_path];
+  end if;
+  new.photo_path := new.photo_paths[1];
+  if not private.valid_job_photo_paths(new.id, new.photo_paths) then
+    raise exception 'Las fotos deben tener rutas válidas, únicas y pertenecer a este felpudo.'
+      using errcode = '23514';
+  end if;
+  if new.status = 'installed' and cardinality(new.photo_paths) = 0 then
     raise exception 'Te falta hacer la foto del felpudo colocado.' using errcode = '23514';
   end if;
 
   -- Una ruta escrita a mano no basta: el objeto debe haberse subido a Storage.
-  if new.photo_path is not null then
+  foreach attached_path in array new.photo_paths loop
     if not exists (
       select 1 from storage.objects o
-      where o.bucket_id = 'job-photos' and o.name = new.photo_path
+      where o.bucket_id = 'job-photos' and o.name = attached_path
       for key share
     ) then
       raise exception 'La foto todavía no está subida. Inténtalo de nuevo.' using errcode = '23514';
     end if;
-  end if;
+  end loop;
   return new;
 end;
 $$;
@@ -489,6 +549,8 @@ declare
   editing_lock public.job_locks%rowtype;
   current_job public.jobs%rowtype;
   saved_job public.jobs%rowtype;
+  next_photo_paths text[];
+  legacy_photo_path text;
 begin
   if actor is null or not private.is_active_member() then
     raise exception 'Tu cuenta no tiene acceso al equipo.' using errcode = '42501';
@@ -500,10 +562,21 @@ begin
     select 1 from pg_catalog.jsonb_object_keys(p_patch) as patch_key(key)
     where key not in (
       'store_name', 'address', 'width_cm', 'length_cm', 'quantity', 'thickness_mm',
-      'material', 'responsible_name', 'notes', 'status', 'photo_path'
+      'material', 'responsible_name', 'notes', 'status', 'photo_path', 'photo_paths'
     )
   ) then
     raise exception 'Los cambios incluyen campos no permitidos.' using errcode = '22023';
+  end if;
+  if p_patch ? 'photo_paths' then
+    if pg_catalog.jsonb_typeof(p_patch -> 'photo_paths') is distinct from 'array' then
+      raise exception 'Las fotos deben enviarse como una lista.' using errcode = '22023';
+    end if;
+    if exists (
+      select 1 from pg_catalog.jsonb_array_elements(p_patch -> 'photo_paths') as photos(value)
+      where pg_catalog.jsonb_typeof(value) is distinct from 'string'
+    ) then
+      raise exception 'La lista de fotos contiene una ruta no válida.' using errcode = '22023';
+    end if;
   end if;
 
   select * into editing_lock from public.job_locks where job_id = p_job_id for update;
@@ -526,6 +599,22 @@ begin
     raise exception 'La edición ha caducado. Vuelve a abrir el trabajo.' using errcode = '55P03';
   end if;
 
+  next_photo_paths := current_job.photo_paths;
+  if p_patch ? 'photo_paths' then
+    select coalesce(array_agg(path order by position), '{}'::text[]) into next_photo_paths
+    from pg_catalog.jsonb_array_elements_text(p_patch -> 'photo_paths') with ordinality as photos(path, position);
+    if p_patch ? 'photo_path'
+      and nullif(btrim(p_patch ->> 'photo_path'), '') is distinct from next_photo_paths[1] then
+      raise exception 'La primera foto no coincide con la lista de fotos.' using errcode = '22023';
+    end if;
+  elsif p_patch ? 'photo_path' then
+    legacy_photo_path := nullif(btrim(p_patch ->> 'photo_path'), '');
+    next_photo_paths := case when legacy_photo_path is null
+      then coalesce(current_job.photo_paths[2:], '{}'::text[])
+      else array[legacy_photo_path] || coalesce(current_job.photo_paths[2:], '{}'::text[])
+    end;
+  end if;
+
   update public.jobs set
     store_name = case when p_patch ? 'store_name' then p_patch ->> 'store_name' else current_job.store_name end,
     address = case when p_patch ? 'address' then p_patch ->> 'address' else current_job.address end,
@@ -537,7 +626,8 @@ begin
     responsible_name = case when p_patch ? 'responsible_name' then p_patch ->> 'responsible_name' else current_job.responsible_name end,
     notes = case when p_patch ? 'notes' then p_patch ->> 'notes' else current_job.notes end,
     status = case when p_patch ? 'status' then p_patch ->> 'status' else current_job.status end,
-    photo_path = case when p_patch ? 'photo_path' then p_patch ->> 'photo_path' else current_job.photo_path end
+    photo_path = next_photo_paths[1],
+    photo_paths = next_photo_paths
   where id = p_job_id returning * into saved_job;
   return saved_job;
 end;
@@ -549,12 +639,12 @@ create or replace function private.photo_is_unreferenced(p_name text)
 returns boolean
 language plpgsql security definer set search_path = ''
 as $$
-declare attached_path text;
+declare attached_paths text[];
 begin
   if not private.is_active_member() then return false; end if;
-  select photo_path into attached_path from public.jobs
+  select photo_paths into attached_paths from public.jobs
   where id::text = split_part(p_name, '/', 1) for update;
-  return attached_path is distinct from p_name;
+  return not (p_name = any(coalesce(attached_paths, '{}'::text[])));
 end;
 $$;
 
@@ -598,6 +688,8 @@ using (
 revoke all on function private.enforce_member_limit() from public, anon, authenticated;
 revoke all on function private.handle_new_user() from public, anon, authenticated;
 revoke all on function private.prepare_job() from public, anon, authenticated;
+revoke all on function private.valid_job_photo_paths(uuid, text[]) from public, anon;
+grant execute on function private.valid_job_photo_paths(uuid, text[]) to authenticated, service_role;
 revoke all on function private.is_active_member() from public, anon;
 revoke all on function private.is_admin() from public, anon;
 revoke all on function private.photo_is_unreferenced(text) from public, anon;
