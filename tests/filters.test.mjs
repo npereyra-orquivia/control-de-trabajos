@@ -155,3 +155,27 @@ test("completed jobs stay visible at the end without changing order within eithe
     "Colocado reciente", "Colocado anterior",
   ]);
 });
+
+test("mat and device areas stay separate while older mats retain their default area", () => {
+  const mat = { ...jobs[0] };
+  const device = { ...jobs[0], job_kind: "dehumidifier", status: "pending_installation", quantity: 3, material: "", thickness_mm: null };
+  assert.equal(matchesJob(mat, { ...all, job_kind: "mat" }), true);
+  assert.equal(matchesJob(mat, { ...all, job_kind: "dehumidifier" }), false);
+  assert.equal(matchesJob(device, { ...all, job_kind: "dehumidifier" }), true);
+  assert.equal(matchesJob(device, { ...all, job_kind: "mat" }), false);
+  assert.equal(matchesJob(device, { ...all, material: "coco", thickness: "20", responsible: "all" }), true);
+  assert.equal(matchesJob(device, { ...all, status: "installed" }), false);
+});
+
+test("inspection filters include installed pending reviews and reopened corrections", () => {
+  const pending = { ...jobs[0], status: "installed" };
+  const approved = { ...pending, review_status: "approved" };
+  const correction = { ...jobs[0], status: "pending_measurement", review_status: "needs_adjustment" };
+  assert.equal(matchesJob(pending, { ...all, review_status: "pending" }), true);
+  assert.equal(matchesJob(jobs[0], { ...all, review_status: "pending" }), false);
+  assert.equal(matchesJob(approved, { ...all, review_status: "approved" }), true);
+  assert.equal(matchesJob(pending, { ...all, review_status: "approved" }), false);
+  assert.equal(matchesJob(correction, { ...all, review_status: "needs_adjustment" }), true);
+  assert.equal(matchesJob({ ...pending, job_kind: "dehumidifier" }, { ...all, review_status: "pending" }), false);
+  assert.equal(matchesJob(correction, { ...all, review: "needs_adjustment" }), true);
+});

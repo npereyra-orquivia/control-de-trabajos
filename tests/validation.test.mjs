@@ -51,3 +51,42 @@ test('responsable conserva el nombre, recorta espacios y admite fichas antiguas 
   assert.equal(validateInput({ ...job, responsible_name: ' Andrés ' }).responsible_name, 'Andrés')
   for (const value of ['a'.repeat(101), 12, {}]) assert.throws(() => validateInput({ ...job, responsible_name: value }), /responsable/)
 })
+
+test('un local nuevo o una sustitución puede esperar a ser medido, sin inventar dimensiones', () => {
+  const draft = { store_name: 'Coach', address: '', material: 'coco', notes: '', width_cm: null, length_cm: null, quantity: 1, job_kind: 'mat' }
+  const saved = validateInput(draft)
+  assert.equal(saved.status, 'pending_measurement')
+  assert.equal(saved.width_cm, null)
+  assert.equal(saved.length_cm, null)
+  for (const status of ['measured', 'cut', 'installed', 'pending_adjustment'])
+    assert.throws(() => validateInput(draft, status), /medidas/)
+  assert.throws(() => validateInput({ ...draft, width_cm: 100 }), /medidas/)
+  assert.equal(validateInput({ ...draft, width_cm: 100, length_cm: 200 }, 'pending_measurement').status, 'pending_measurement')
+  assert.equal(validateInput({ ...draft, width_cm: 100, length_cm: 200 }, 'measured').status, 'measured')
+})
+
+test('deshumidificadores registran unidades enteras sin medidas, material ni grosor de felpudo', () => {
+  const device = { store_name: 'Centro', address: '', material: 'coco', notes: '', width_cm: 95, length_cm: 150, quantity: 4, thickness_mm: 20, job_kind: 'dehumidifier' }
+  const saved = validateInput(device)
+  assert.equal(saved.quantity, 4)
+  assert.equal(saved.status, 'pending_installation')
+  assert.equal(saved.width_cm, null)
+  assert.equal(saved.length_cm, null)
+  assert.equal(saved.thickness_mm, null)
+  assert.equal(saved.material, '')
+  for (const quantity of [0, -1, 1.5, '4', null, undefined, NaN, Infinity, 2147483648])
+    assert.throws(() => validateInput({ ...device, quantity }), /deshumidificadores/)
+  for (const status of ['measured', 'cut', 'pending_measurement', 'pending_adjustment'])
+    assert.throws(() => validateInput(device, status), /deshumidificadores/)
+  assert.equal(validateInput(device, 'installed').status, 'installed')
+  assert.throws(() => validateInput({ ...device, job_kind: 'unknown' }), /Felpudos/)
+})
+
+test('avance respeta las fases de aparatos, nuevas mediciones y ajustes', () => {
+  assert.equal(nextStatus('pending_measurement', 'mat'), 'measured')
+  assert.equal(nextStatus('pending_installation', 'dehumidifier'), 'installed')
+  assert.equal(nextStatus('pending_adjustment', 'mat'), 'installed')
+  assert.equal(nextStatus('measured', 'dehumidifier'), null)
+  assert.equal(nextStatus('pending_installation', 'mat'), null)
+  assert.equal(nextStatus('installed', 'dehumidifier'), null)
+})
