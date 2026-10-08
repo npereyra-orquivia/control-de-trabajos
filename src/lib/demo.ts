@@ -1,5 +1,6 @@
 import type { Job, JobLock, JobPatch, JobInput, Profile } from "../types";
 import { nextStatus } from "./validation.mjs";
+import { jobPhotoPaths } from "./photos.mjs";
 export const demoProfile: Profile = {
   id: "demo-ana",
   display_name: "Ana García",
@@ -67,6 +68,7 @@ function sampleJobs(): Job[] {
     id: `demo-job-${index}`,
     quantity: 1,
     photo_path: null,
+    photo_paths: [],
     measured_at: now,
     measured_by: job.created_by,
     cutting_at: null,
@@ -91,6 +93,7 @@ export function demoJobs(): Job[] {
           status: String(job.status) === "cutting" ? "measured" : job.status,
           thickness_mm: job.thickness_mm ?? null,
           responsible_name: job.responsible_name ?? "",
+          photo_paths: jobPhotoPaths(job),
         }));
     }
   } catch {
@@ -150,6 +153,7 @@ export function createDemo(input: JobInput, id: string = crypto.randomUUID()) {
     id,
     status: "measured",
     photo_path: null,
+    photo_paths: [],
     measured_at: now,
     measured_by: demoProfile.id,
     cutting_at: null,
@@ -186,17 +190,23 @@ export function updateDemo(
     throw new Error(
       "El trabajo ha cambiado. Cierra y vuelve a abrirlo para ver la última información.",
     );
-  if (old.status === "installed") throw new Error("El felpudo ya está colocado.");
   if (patch.quantity !== undefined && patch.quantity !== 1)
     throw new Error("Cada trabajo corresponde a un solo felpudo.");
   if (patch.status && patch.status !== old.status && patch.status !== nextStatus(old.status))
     throw new Error("Sigue el orden: Medido, Cortado y Colocado.");
-  if (patch.status === "installed" && !patch.photo_path)
-    throw new Error("Añade una foto antes de marcar Colocado.");
+  const photoPaths = patch.photo_paths !== undefined
+    ? [...new Set(patch.photo_paths)]
+    : patch.photo_path !== undefined
+      ? patch.photo_path ? [patch.photo_path, ...jobPhotoPaths(old).slice(1)] : jobPhotoPaths(old).slice(1)
+      : jobPhotoPaths(old);
+  if ((patch.status || old.status) === "installed" && !photoPaths.length)
+    throw new Error("Añade al menos una foto antes de marcar Colocado.");
   const now = new Date().toISOString();
   const job = {
     ...old,
     ...patch,
+    photo_paths: photoPaths,
+    photo_path: photoPaths[0] || null,
     updated_at: now,
     updated_by: demoProfile.id,
     version: old.version + 1,
@@ -205,7 +215,7 @@ export function updateDemo(
     job.cut_at = now;
     job.cut_by = demoProfile.id;
   }
-  if (patch.status === "installed") {
+  if (patch.status === "installed" && old.status !== "installed") {
     job.installed_at = now;
     job.installed_by = demoProfile.id;
   }

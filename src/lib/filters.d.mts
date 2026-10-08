@@ -28,3 +28,4 @@ export function getResponsibleOptions(
   profiles: readonly { display_name: string; active: boolean }[],
 ): MaterialOption[];
 export function matchesJob(job: FilterableJob, filters: JobFilters): boolean;
+export function sortJobsForWorkspace<T extends Pick<FilterableJob, "status">>(jobs: readonly T[]): T[];

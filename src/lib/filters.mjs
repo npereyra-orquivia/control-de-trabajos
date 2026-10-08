@@ -94,3 +94,12 @@ export function matchesJob(job, filters) {
   const query = normalized(filters.search);
   return !query || normalized(`${job.store_name} ${job.address || ""} ${job.material || ""}`).includes(query);
 }
+
+export function sortJobsForWorkspace(jobs) {
+  // Keep the incoming order in each group: recent edits cannot lift a
+  // completed mat above work that still needs cutting or installation.
+  return [
+    ...jobs.filter((job) => job.status !== "installed"),
+    ...jobs.filter((job) => job.status === "installed"),
+  ];
+}
